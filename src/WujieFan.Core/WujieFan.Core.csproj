@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>WujieFan.Core</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      LpcIO.bin 来自 PawnIO vendor 包 release_0_2_11, 许可 LGPL 2.1。
+      以嵌入资源方式随程序分发, 运行时直接加载, 不落盘。
+    -->
+    <EmbeddedResource Include="..\WujieFan\Resources\LpcIO.bin">
+      <LogicalName>WujieFan.Core.LpcIO.bin</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>

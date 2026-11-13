@@ -1,0 +1,6 @@
+LIBRARY      "SmokePlugin"
+
+EXPORTS
+    Start
+    Stop
+    Setup

@@ -1,0 +1,20 @@
+# 构建产物
+bin/
+obj/
+dist/
+build/
+*.user
+*.suo
+.vs/
+
+# 工具自身状态（含本机标识，绝不入库）
+.local/
+
+# 一次性勘察脚本与临时产物
+_survey/
+work/
+*.log
+!docs/archive/**/*.log
+
+# 备份
+*.bak-*

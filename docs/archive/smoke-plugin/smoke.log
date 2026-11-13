@@ -1,0 +1,6 @@
+[2026-11-13 22:35:24.644] [pid=6328 tid=13412] === DllMain DLL_PROCESS_ATTACH  log=C:\ProgramData\WujieEc\smoke.log ===
+[2026-11-13 22:35:24.644] [pid=6328 tid=13412] Setup(hWnd=00000000) called -> return TRUE
+[2026-11-13 22:35:24.644] [pid=6328 tid=13412] === DllMain DLL_PROCESS_DETACH ===
+[2026-11-13 22:35:54.810] [pid=22080 tid=13404] === DllMain DLL_PROCESS_ATTACH  log=C:\ProgramData\WujieEc\smoke.log ===
+[2026-11-13 22:35:54.810] [pid=22080 tid=13404] Setup(hWnd=00000000) called -> return TRUE
+[2026-11-13 22:35:54.810] [pid=22080 tid=13404] === DllMain DLL_PROCESS_DETACH ===
