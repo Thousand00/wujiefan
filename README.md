@@ -106,6 +106,18 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 - 布局文件的编码是混合的（OEM 自带图层名是 GBK 字节），工具脚本用 latin-1 读写以保持字节不变，
   **不要用记事本另存为 UTF-8**，否则原有中文图层名会变乱码。
 
+## 源码仓库
+
+<https://github.com/Thousand00/wujiefan> —— 默认分支 `master`。
+
+文档：
+
+- [现状与技术总结](docs/01-现状与技术总结.md) —— 硬件/固件事实、EC 寄存器表、RTSS 各数据通道调研、
+  程序结构、踩坑速查。要改这个项目或复现这套做法，先读它。
+
+运行时不进仓库：`dist/`、`build/`、`bin/`、`obj/` 均在 `.gitignore` 里，需要时用
+`dotnet publish src\WujieFan\WujieFan.csproj -c Release -o dist\app` 自行构建（先退出正在运行的实例）。
+
 ## 许可
 
 本仓库自有代码为 MIT。内嵌的 PawnIO 模块为 LGPL 2.1。
