@@ -101,9 +101,11 @@ public sealed class EcAccess : IDisposable
 
     /// <summary>
     /// 读 16 位转速计数器。按 高-低-高 顺序读, 两次高字节一致才采信,
-    /// 避免计数器在读取过程中进位导致的错值。6 次都不稳定时返回最后一次拼出的值。
+    /// 避免计数器在读取过程中进位导致的错值。6 次都不稳定时返回最后一次拼出的值,
+    /// 但把 stable 置为 false —— 调用方必须据此判定这次读数不可信,
+    /// 因为撕裂值可能恰好落在看起来正常的区间里, 只靠范围检查发现不了。
     /// </summary>
-    public int Read16Stable(ushort loAddress, ushort hiAddress)
+    public int Read16Stable(ushort loAddress, ushort hiAddress, out bool stable)
     {
         int last = 0;
         for (int attempt = 0; attempt < 6; attempt++)
@@ -113,8 +115,13 @@ public sealed class EcAccess : IDisposable
             int hi2 = Read(hiAddress);
             last = (hi2 << 8) | lo;
             if (hi1 == hi2)
+            {
+                stable = true;
                 return last;
+            }
         }
+
+        stable = false;
         return last;
     }
 

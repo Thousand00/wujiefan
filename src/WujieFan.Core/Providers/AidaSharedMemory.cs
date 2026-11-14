@@ -102,9 +102,9 @@ public sealed class AidaSharedMemory : IDisposable
         foreach (FanEntry f in s.Fans)
         {
             sb.Append("<fan>");
-            sb.Append("<id>").Append(IdPrefix).Append(f.Id).Append("</id>");
-            sb.Append("<label>").Append(f.Label).Append("</label>");
-            sb.Append("<value>").Append(f.ValueText).Append("</value>");
+            sb.Append("<id>").Append(IdPrefix).Append(Escape(f.Id)).Append("</id>");
+            sb.Append("<label>").Append(Escape(f.Label)).Append("</label>");
+            sb.Append("<value>").Append(Escape(f.ValueText)).Append("</value>");
             sb.Append("</fan>");
         }
 
@@ -118,6 +118,19 @@ public sealed class AidaSharedMemory : IDisposable
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// 转义会破坏 RTSS 那个极简状态机的字符。
+    /// 当前写进去的都是固定标签与数字, 但这份 XML 是给别人解析的契约, 不该依赖"恰好没有特殊字符"。
+    /// 解析器不支持属性与自闭合标签, 所以只处理文本内容里的三个基本实体。
+    /// </summary>
+    private static string Escape(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        if (s.IndexOfAny(new[] { '&', '<', '>' }) < 0) return s;
+
+        return s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
     }
 
     public void Dispose()

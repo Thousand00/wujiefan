@@ -168,6 +168,21 @@ class Layout:
     def new_body(self, pairs: list[tuple[str, str]]) -> list[str]:
         return [f"{k}={v}{self.eol}" for k, v in pairs]
 
+    def foreign_lines(self) -> list[str]:
+        """Every line that does not belong to one of our blocks, in order.
+
+        Used as the safety net in _finish: the rewrite must not disturb a single
+        line of the user's existing layout. Header lines are normalised in
+        render(), so this works on the rendered text rather than the original.
+        """
+        out: list[str] = list(self.preamble)
+        for b in self.blocks:
+            if b.is_ours():
+                continue
+            out.append(b.header_line if b.index is None else f"[{b.kind}{b.index}]" + (pair(b.header_line) or self.eol))
+            out.extend(b.body)
+        return out
+
 
 def set_key(block: Block, key: str, value: str, eol: str) -> None:
     prefix = key + "="
@@ -250,11 +265,12 @@ def main() -> int:
             ])
             lay.append(block)
         else:
+            # Refresh what identifies the layer, but leave placement alone.
+            # The user may have dragged the layer somewhere in the RTSS editor;
+            # writing our default coordinates back over theirs silently undoes
+            # that. Text is refreshed because it has to track the source name.
             set_key(block, "Name", name, lay.eol)
             set_key(block, "Text", text, lay.eol)
-            set_key(block, "PositionX", str(px), lay.eol)
-            set_key(block, "PositionY", str(py), lay.eol)
-            set_key(block, "TextColor", colour, lay.eol)
 
     lay.reindex("Source")
     lay.reindex("Layer")
@@ -268,13 +284,55 @@ def main() -> int:
                    f"after: {n_src} sources, {n_lay} layers")
 
 
+# General's counters are derived from the blocks actually present, so this
+# script legitimately rewrites them. They must not count as "user content"
+# when the self-check compares before and after.
+_MANAGED_KEYS = ("Sources=", "Layers=")
+
+
+def _short(line: str, limit: int = 60) -> str:
+    """Compact a diff line for the error message; some overlay texts are kilobytes."""
+    s = line.rstrip()
+    return repr(s if len(s) <= limit else s[:limit] + "...")
+
+
+def _strip_managed_counts(lines: list[str]) -> list[str]:
+    return [ln for ln in lines if not ln.startswith(_MANAGED_KEYS)]
+
+
+def _check_foreign_untouched(original_bytes: bytes, lay: Layout) -> str | None:
+    """Compare every non-ours line before and after. Returns an error or None.
+
+    This is the whole safety net for editing someone's live layout: our blocks
+    are inserted and rewritten, but not one line of the user's own sources and
+    layers may move, change or disappear. Renumbering is expected to be a no-op
+    on a healthy file, so a mismatch here means we were about to damage it.
+    """
+    before = _strip_managed_counts(Layout(original_bytes.decode("latin-1")).foreign_lines())
+    after = _strip_managed_counts(lay.foreign_lines())
+
+    if before == after:
+        return None
+
+    for i, (b, a) in enumerate(zip(before, after)):
+        if b != a:
+            return (f"self-check failed: line {i + 1} of the user's own content "
+                    f"changed ({_short(b)} -> {_short(a)}). Nothing was written.")
+
+    return (f"self-check failed: {len(after)} lines after the rewrite vs "
+            f"{len(before)} before. Nothing was written.")
+
+
 def _finish(lay: Layout, general: Block, args, original_bytes: bytes, summary: str) -> int:
     out = lay.render().encode("latin-1")
     print(summary)
     print(f"size: {len(original_bytes)} -> {len(out)} bytes")
 
-    # Sanity check: every non-ours line from the original must still be present
-    # in the same order. Catches accidental deletion without diffing by hand.
+    problem = _check_foreign_untouched(original_bytes, lay)
+    if problem is not None:
+        print(problem)
+        return 1
+
     if args.dry_run:
         print("dry-run: nothing written")
         return 0

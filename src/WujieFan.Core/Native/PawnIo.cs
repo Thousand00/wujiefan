@@ -50,31 +50,41 @@ public sealed class PawnIo : IDisposable
             throw new PawnIoException("PawnIOLib.dll 的导出函数不完整，版本可能太旧：" + ex.Message, ex);
         }
 
-        uint api = 0;
-        int hrVer = _version(ref api);
-        if (hrVer < 0)
-            throw new PawnIoException($"pawnio_version 失败 hr=0x{unchecked((uint)hrVer):X8}", unchecked((uint)hrVer));
-
-        // 该返回值是编译期常量, 不代表实际安装版本; 可信的是文件版本号。
-        string fileVer = ReadFileVersion(path) ?? "?";
-        Version = $"{fileVer} (API {api >> 16}.{(api >> 8) & 0xFF}.{api & 0xFF})";
-
-        IntPtr handle = IntPtr.Zero;
-        int hr = _open(ref handle);
-        if (hr < 0)
+        // 从这里开始任何一步失败都必须先释放已加载的 DLL, 否则构造失败的对象没人 Dispose,
+        // 模块引用计数会一直挂着 (每次重连失败泄漏一次)。
+        try
         {
-            uint code = unchecked((uint)hr);
-            if (code == E_ACCESSDENIED)
-                throw new PawnIoException(
-                    "PawnIO 设备访问被拒绝 (E_ACCESSDENIED)。" + Environment.NewLine +
-                    "该驱动只允许管理员打开，请以管理员身份运行本程序。", code);
-            throw new PawnIoException($"pawnio_open 失败 hr=0x{code:X8}", code);
+            uint api = 0;
+            int hrVer = _version(ref api);
+            if (hrVer < 0)
+                throw new PawnIoException($"pawnio_version 失败 hr=0x{unchecked((uint)hrVer):X8}", unchecked((uint)hrVer));
+
+            // 该返回值是编译期常量, 不代表实际安装版本; 可信的是文件版本号。
+            string fileVer = ReadFileVersion(path) ?? "?";
+            Version = $"{fileVer} (API {api >> 16}.{(api >> 8) & 0xFF}.{api & 0xFF})";
+
+            IntPtr handle = IntPtr.Zero;
+            int hr = _open(ref handle);
+            if (hr < 0)
+            {
+                uint code = unchecked((uint)hr);
+                if (code == E_ACCESSDENIED)
+                    throw new PawnIoException(
+                        "PawnIO 设备访问被拒绝 (E_ACCESSDENIED)。" + Environment.NewLine +
+                        "该驱动只允许管理员打开，请以管理员身份运行本程序。", code);
+                throw new PawnIoException($"pawnio_open 失败 hr=0x{code:X8}", code);
+            }
+
+            if (handle == IntPtr.Zero)
+                throw new PawnIoException("pawnio_open 报告成功但返回了空句柄。");
+
+            _handle = handle;
         }
-
-        if (handle == IntPtr.Zero)
-            throw new PawnIoException("pawnio_open 报告成功但返回了空句柄。");
-
-        _handle = handle;
+        catch
+        {
+            Dispose();
+            throw;
+        }
     }
 
     private static T Bind<T>(IntPtr hModule, string name) where T : Delegate

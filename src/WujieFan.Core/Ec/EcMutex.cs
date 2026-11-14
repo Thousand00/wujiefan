@@ -21,46 +21,78 @@ public sealed class EcMutex : IDisposable
     };
 
     private readonly List<IntPtr> _handles = new();
-    private readonly List<IntPtr> _lockHandles = new();
-    private bool _acquired;
+    private readonly List<IntPtr> _owned = new();
+    private bool _disposed;
 
-    /// <summary>获取全部互斥量。返回是否全部成功 (部分成功也会持有已拿到的)。</summary>
-    public bool Acquire(int timeoutMs = 2000)
+    /// <summary>当前是否持有锁 (可能只拿到其中一部分)。</summary>
+    public bool IsHeld => _owned.Count > 0;
+
+    /// <summary>互斥量句柄只创建一次, 之后反复 Acquire/Release 复用。</summary>
+    private bool EnsureHandles()
     {
-        if (_acquired) return true;
+        // 从已建好的数量续建: 中途失败时不能从头再来, 否则同一把锁会拿到两个句柄。
+        for (int i = _handles.Count; i < Names.Length; i++)
+        {
+            IntPtr h = CreateMutex(IntPtr.Zero, false, Names[i]);
+            if (h == IntPtr.Zero) return false;
+            _handles.Add(h);
+        }
+
+        return _handles.Count == Names.Length;
+    }
+
+    /// <summary>
+    /// 获取全部互斥量。返回是否全部成功 (部分成功也会持有已拿到的, 由 Release 统一归还)。
+    ///
+    /// 调用方应当在**每次 I2EC 访问前后**成对调用 Acquire/Release, 而不是一直持锁:
+    /// 一把锁被某个进程长期占住, HWiNFO / LibreHardwareMonitor 这些同样守约定的软件
+    /// 就再也读不到 EC, 那已经超出"互斥"的本意, 变成独占了。
+    /// </summary>
+    public bool Acquire(int timeoutMs = 250)
+    {
+        if (_disposed) return false;
+
+        if (!EnsureHandles()) return false;
 
         bool all = true;
-        foreach (string name in Names)
+        foreach (IntPtr h in _handles)
         {
-            IntPtr h = CreateMutex(IntPtr.Zero, false, name);
-            if (h == IntPtr.Zero) { all = false; continue; }
+            // 已持有的不重复 Wait: 同一线程对同一互斥量再次 Wait 是重入计数,
+            // 而 Release 只调一次就会留下一个计数没还, 那把锁之后就永远归本进程了。
+            if (_owned.Contains(h)) continue;
 
-            _handles.Add(h);
             uint wait = WaitForSingleObject(h, (uint)timeoutMs);
             if (wait is 0 or 0x80)   // WAIT_OBJECT_0 / WAIT_ABANDONED
-                _lockHandles.Add(h);
+                _owned.Add(h);
             else
                 all = false;
         }
 
-        _acquired = true;
         return all;
+    }
+
+    /// <summary>释放本次 Acquire 拿到的锁。可以安全地重复调用。</summary>
+    public void Release()
+    {
+        foreach (IntPtr h in _owned)
+        {
+            try { ReleaseMutex(h); } catch { }
+        }
+        _owned.Clear();
     }
 
     public void Dispose()
     {
-        foreach (IntPtr h in _lockHandles)
-        {
-            try { ReleaseMutex(h); } catch { }
-        }
-        _lockHandles.Clear();
+        if (_disposed) return;
+        _disposed = true;
+
+        Release();
 
         foreach (IntPtr h in _handles)
         {
             try { CloseHandle(h); } catch { }
         }
         _handles.Clear();
-        _acquired = false;
     }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]

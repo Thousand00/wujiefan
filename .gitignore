@@ -11,6 +11,7 @@ backup/
 
 # 一次性勘察脚本与临时产物
 _survey/
+_t/
 work/
 *.log
 !docs/archive/**/*.log

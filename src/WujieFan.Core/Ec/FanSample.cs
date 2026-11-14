@@ -19,7 +19,14 @@ public sealed class FanReading
     /// <summary>占空比百分比 0..100。</summary>
     public double PwmPercent => PwmOut * 100.0 / EcRegisters.PwmMax;
 
+    /// <summary>读数可信 (没有异常说明)。</summary>
     public bool IsValid => Note.Length == 0;
+
+    /// <summary>
+    /// 计数器为 0 = 风扇确实不动了 (停转或还没起转), 这与"读不到信号"是两件事。
+    /// 界面和 RTSS 都该显示 0, 而不是留空 —— 留空会把"风扇停了"显示成"读取失败"。
+    /// </summary>
+    public bool IsStopped => RawCount == 0;
 }
 
 /// <summary>一次完整采样的结果。</summary>
@@ -36,7 +43,7 @@ public sealed class FanSample
     public static (int Rpm, string Note) ConvertRpm(int count)
     {
         if (count <= 0)
-            return (0, "无信号或停转");
+            return (0, "");   // 停转: RPM 就是 0, 不是异常
         if (count >= 0x4000)
             return (0, "计数值越界(无有效信号)");
         if (count < 0x80)

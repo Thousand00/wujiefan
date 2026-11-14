@@ -42,7 +42,7 @@ public static class SupportedHardware
             return SupportVerdict.Refuse(
                 "读不到 SMBIOS 信息",
                 "无法从注册表读取机器型号, 为了安全不读取任何 EC 寄存器。\n" +
-                "如果你确认这是受支持的机型, 可以用 --force 跳过检查 (风险自负)。");
+                "如果你确认这是受支持的机型, 可以在提示框里选\"是\"强行继续 (风险自负)。");
         }
 
         Profile? matched = null;
@@ -70,7 +70,7 @@ public static class SupportedHardware
                 "机型不在支持列表",
                 what + "\n\n已验证的机型:\n  " + known + "\n\n" +
                 "不同机型的 EC 风扇寄存器地址与换算系数完全不同, 强行读取只会得到错误的转速。\n" +
-                "如果你确认这是一台型号相同、只是 SMBIOS 写法不同的机器, 可以用 --force 跳过检查 (风险自负)。");
+                "如果你确认这是一台型号相同、只是 SMBIOS 写法不同的机器, 可以在提示框里选\"是\"强行继续 (风险自负)。");
         }
 
         // EC 固件版本决定寄存器布局, 必须精确匹配。
@@ -84,7 +84,7 @@ public static class SupportedHardware
                     $"而本程序只验证过 EC {matched.EcMajor}.{matched.EcMinor}。\n\n" +
                     "风扇寄存器的地址和换算系数是逐字节对着特定固件逆向出来的, " +
                     "固件不同就意味着地址可能整体偏移。为了不给你一个错误的风扇转速, 这里直接停下。\n" +
-                    "如果你确认要冒险, 可以用 --force 跳过检查 (风险自负)。");
+                    "如果你确认要冒险, 可以在提示框里选\"是\"强行继续 (风险自负)。");
             }
         }
         else
@@ -92,7 +92,7 @@ public static class SupportedHardware
             return SupportVerdict.Refuse(
                 "读不到 EC 固件版本",
                 $"机型已识别为 {matched.Note}, 但 SMBIOS 里没有 EC 固件版本字段, " +
-                "无法确认寄存器布局一致。可以用 --force 跳过检查 (风险自负)。");
+                "无法确认寄存器布局一致。可以在提示框里选\"是\"强行继续 (风险自负)。");
         }
 
         return SupportVerdict.Accept(matched);

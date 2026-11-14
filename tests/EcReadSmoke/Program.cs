@@ -21,16 +21,20 @@ namespace EcReadSmoke;
 ///   EcReadSmoke.exe --xml                只生成并打印 XML, 不访问硬件
 ///   EcReadSmoke.exe --autostart-test     用指定 exe 路径测试自启动计划任务的解析逻辑 (不创建任务)
 ///   EcReadSmoke.exe --autostart-live     真实创建/查询/删除计划任务 WujieFan (需管理员, 会还原)
+///   EcReadSmoke.exe --autostart-cn       中文 exe 路径的自启动回归 (需管理员)
+///   EcReadSmoke.exe --autostart-upgrade  旧版任务定义被重写修正的回归 (需管理员)
 /// </summary>
 internal static class Program
 {
+    private const string NL0 = "\r\n";
+
     private static int Main(string[] args)
     {
         Console.OutputEncoding = Encoding.UTF8;
         TrySetUtf8Console();
 
         int seconds = 5;
-        bool json = false, aida = false, xmlOnly = false, peek = false, checkHw = false, autoStartTest = false, autoStartLive = false;
+        bool json = false, aida = false, xmlOnly = false, peek = false, checkHw = false, autoStartTest = false, autoStartLive = false, autoStartCn = false, autoStartUpgrade = false;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -43,6 +47,8 @@ internal static class Program
                 case "--checkhw": checkHw = true; break;
                 case "--autostart-test": autoStartTest = true; break;
                 case "--autostart-live": autoStartLive = true; break;
+                case "--autostart-cn": autoStartCn = true; break;
+                case "--autostart-upgrade": autoStartUpgrade = true; break;
                 case "--seconds" when i + 1 < args.Length:
                     if (int.TryParse(args[++i], out int s)) seconds = s;
                     break;
@@ -57,6 +63,8 @@ internal static class Program
 
         if (autoStartTest) return RunAutoStartTest();
         if (autoStartLive) return RunAutoStartLive();
+        if (autoStartCn) return RunAutoStartChinese();
+        if (autoStartUpgrade) return RunAutoStartUpgrade();
 
         if (checkHw) return RunCheckHw();
 
@@ -78,7 +86,9 @@ internal static class Program
 
         Console.Error.WriteLine($"PawnIO: {reader.PawnIoVersion}");
         Console.Error.WriteLine($"端口基址: 0x{reader.PortBase:X2} (槽位 {reader.Slot})");
-        Console.Error.WriteLine($"硬件互斥量: {(reader.HasMutex ? "已获取" : "未获取(仍可只读采样)")}");
+        // 互斥量现在是"每次采样前后成对获取/释放", 打开时不再一直持锁,
+        // 所以这里只能说"是否用上了互斥量", 不能说"是否已获取"。
+        Console.Error.WriteLine($"硬件互斥量: {(reader.HasMutex ? "已启用(每次采样成对获取)" : "未启用(仍可只读采样)")}");
 
         AidaSharedMemory? aidaSm = null;
         if (aida)
@@ -247,16 +257,326 @@ internal static class Program
             Console.WriteLine($"   任务 Command = {cmd.Substring(ci, ce - ci + 10).Trim()}");
         }
 
+        // 这几项是本轮重写任务 XML 的目的所在, 一并断言, 免得以后又退回模板默认值:
+        //   笔记本不接电源也要启动、不能被执行时限中途杀掉。
+        bool batteryStart = HasXmlValue(cmd, "DisallowStartIfOnBatteries", "false");
+        bool batteryStop = HasXmlValue(cmd, "StopIfGoingOnBatteries", "false");
+        bool unlimited = HasXmlValue(cmd, "ExecutionTimeLimit", "PT0S");
+        Console.WriteLine($"   DisallowStartIfOnBatteries=false : {(batteryStart ? "OK" : "FAIL 拔电源就不启动")}");
+        Console.WriteLine($"   StopIfGoingOnBatteries=false     : {(batteryStop ? "OK" : "FAIL 拔电源就被停")}");
+        Console.WriteLine($"   ExecutionTimeLimit=PT0S (无限)   : {(unlimited ? "OK" : "FAIL 会被定时杀掉")}");
+
         var dis = mgr.Disable();
         Console.WriteLine($"4. Disable -> ok={dis.Ok} msg={dis.Message}");
 
         bool afterDisable = mgr.IsEnabled();
         Console.WriteLine($"5. 关闭后 IsEnabled = {afterDisable}  {(afterDisable ? "FAIL" : "OK")}");
 
-        bool pass = afterEnable && !afterDisable;
+        bool pass = afterEnable && !afterDisable && batteryStart && batteryStop && unlimited;
         Console.WriteLine();
         Console.WriteLine(pass ? "结果: 通过" : "结果: 失败");
         return pass ? 0 : 1;
+    }
+
+    /// <summary>
+    /// 中文路径往返测试: 用带中文目录的 exe 路径建一个临时计划任务,
+    /// 验证 IsEnabled() 能认出来。
+    ///
+    /// 这是 schtasks 输出编码的回归测试: 它的控制台输出是 UTF-8, 若按系统 ANSI
+    /// 代码页 (简体中文 = GBK) 解码, 中文路径会变成乱码, IsOurCommand 匹配失败,
+    /// 自启动勾选就会永远回弹成"未启用"。
+    /// 用一个独立的任务名, 不会动到真正的 WujieFan 任务。
+    /// </summary>
+    private static int RunAutoStartChinese()
+    {
+        const string TaskName = "WujieFanCnTest";
+
+        // 这个路径不需要真实存在: 自启动管理只做字符串比对, 不会去启动它。
+        string cnDir = "E:" + System.IO.Path.DirectorySeparatorChar + "\u6D4B\u8BD5";
+        string exe = System.IO.Path.Combine(cnDir, "WujieFan.exe");
+
+        var mgr = new AutoStartManager(exe, TaskName);
+
+        Console.WriteLine("=== 中文路径自启动测试 ===");
+        Console.WriteLine($"目标 exe = {exe}");
+
+        var existing = new AutoStartManager(exe, TaskName);
+        existing.Disable();
+
+        try
+        {
+            var en = mgr.Enable();
+            Console.WriteLine($"1. Enable -> ok={en.Ok}");
+            if (!en.Ok)
+            {
+                Console.WriteLine("   " + en.Message.Replace("\n", "\n   "));
+                return 1;
+            }
+
+            bool enabled = mgr.IsEnabled();
+            Console.WriteLine($"2. IsEnabled (中文路径) = {enabled}  {(enabled ? "OK" : "FAIL 自启动勾选会回弹")}");
+
+            string cmd = ReadTaskCommand(TaskName);
+            Console.WriteLine($"3. 任务里的 Command = {Show(cmd)}");
+            bool same = string.Equals(cmd, exe, StringComparison.OrdinalIgnoreCase);
+            Console.WriteLine($"4. 与目标路径一致 = {same}  {(same ? "OK" : "FAIL 编码被破坏")}");
+
+            var dis = mgr.Disable();
+            bool afterDisable = mgr.IsEnabled();
+            Console.WriteLine($"5. Disable -> ok={dis.Ok}, 之后 IsEnabled = {afterDisable}  {(afterDisable ? "FAIL" : "OK")}");
+
+            bool pass = enabled && same && !afterDisable;
+            Console.WriteLine();
+            Console.WriteLine(pass ? "结果: 通过" : "结果: 失败");
+            return pass ? 0 : 1;
+        }
+        finally
+        {
+            // 无论成败都不要把这个测试任务留在系统里。
+            try { mgr.Disable(); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// 旧版任务定义被升级修正的回归测试。
+    ///
+    /// 0.1.0 用 schtasks /SC ONLOGON 的模板建任务, 那份定义里
+    /// DisallowStartIfOnBatteries=true (笔记本拔电源就不启动) 且 ExecutionTimeLimit=PT72H
+    /// (连续跑满 72 小时被结束)。用户升级后不会再去点一次"开机自启动", 所以 Enable()
+    /// 必须把已存在的任务也重写一遍。这个测试先故意造一份旧定义, 再验证它被改正。
+    /// </summary>
+    private static int RunAutoStartUpgrade()
+    {
+        const string TaskName = "WujieFanUpgradeTest";
+        string exe = @"E:\WORKS\RTSS-0\dist\app\WujieFan.exe";
+        var mgr = new AutoStartManager(exe, TaskName);
+
+        Console.WriteLine("=== 自启动升级路径测试 ===");
+        Console.WriteLine($"目标 exe = {exe}");
+
+        try { mgr.Disable(); } catch { }
+
+        try
+        {
+            // 1. 造一份"旧版定义": 用 XML 直接导入, 精确复刻 0.1.0 那份模板的缺陷
+            //    (DisallowStartIfOnBatteries=true + ExecutionTimeLimit=PT72H)。
+            //    刻意不通过 /TR 命令行拼引号, 那样测得是 schtasks 的引号规则而不是升级路径。
+            string? oldXmlPath = null;
+            try
+            {
+                oldXmlPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
+                    $"wujiefan-oldtask-{Guid.NewGuid():N}.xml");
+                System.IO.File.WriteAllText(oldXmlPath, BuildLegacyTaskXml(exe), System.Text.Encoding.Unicode);
+
+                var (exit, output) = RunSchtasks(
+                    "/Create /TN \"" + TaskName + "\" /XML \"" + oldXmlPath + "\" /F");
+                if (exit != 0)
+                {
+                    Console.WriteLine($"0. 造旧任务失败 (退出码 {exit}): {output}");
+                    return 1;
+                }
+            }
+            finally
+            {
+                if (oldXmlPath is not null) { try { System.IO.File.Delete(oldXmlPath); } catch { } }
+            }
+
+            string oldXml = ReadTaskXml(TaskName);
+            string oldBatteryRaw = XmlValue(oldXml, "DisallowStartIfOnBatteries");
+            string oldLimitRaw = XmlValue(oldXml, "ExecutionTimeLimit");
+            bool oldBattery = string.Equals(oldBatteryRaw, "true", StringComparison.OrdinalIgnoreCase);
+
+            // PT72H 是任务计划程序 v1.2 的默认执行时限, 而 /Query /XML 会把"等于默认值"的
+            // 节点整个省掉 (系统自带的 ScheduledDefrag 也查不到这个节点)。
+            // 所以这里"读不到"恰恰表示旧定义用的就是默认的 72 小时, 不是缺失。
+            bool oldLimitDefault = oldLimitRaw.Length == 0
+                                   || oldLimitRaw.StartsWith("PT72", StringComparison.OrdinalIgnoreCase);
+
+            Console.WriteLine($"1. 旧定义 DisallowStartIfOnBatteries = {Show(oldBatteryRaw)}  {(oldBattery ? "OK 旧缺陷已复现" : "注意 本机模板没带这一项")}");
+            Console.WriteLine($"   旧定义 ExecutionTimeLimit = {(oldLimitRaw.Length == 0 ? "(节点被省略 = 默认 PT72H)" : oldLimitRaw)}  {(oldLimitDefault ? "OK 旧缺陷已复现" : "注意")}");
+
+            // 旧定义必须被判定为"需要升级", 否则界面启动时那次 IsUpToDate 检查不会触发重写。
+            bool oldStale = !mgr.IsUpToDate();
+            Console.WriteLine($"   旧定义 IsUpToDate = false : {(oldStale ? "OK 会触发自动重写" : "FAIL 启动时不会修")}");
+
+            // 2. 升级路径: Enable() 不该短路返回, 而要重写定义。
+            var en = mgr.Enable();
+            Console.WriteLine($"2. Enable -> ok={en.Ok}");
+            if (!en.Ok)
+            {
+                Console.WriteLine("   " + en.Message.Replace("\n", "\n   "));
+                return 1;
+            }
+
+            bool enabled = mgr.IsEnabled();
+            Console.WriteLine($"3. IsEnabled = {enabled}  {(enabled ? "OK" : "FAIL")}");
+
+            string oneLine = en.Message.Replace("\n", " / ");
+            string newXml = ReadTaskXml(TaskName);
+            bool newBatteryStart = HasXmlValue(newXml, "DisallowStartIfOnBatteries", "false");
+            bool newBatteryStop = HasXmlValue(newXml, "StopIfGoingOnBatteries", "false");
+            bool newUnlimited = HasXmlValue(newXml, "ExecutionTimeLimit", "PT0S");
+            Console.WriteLine($"4. 重写后 DisallowStartIfOnBatteries=false : {(newBatteryStart ? "OK" : "FAIL 升级后仍不能拔电源启动")}");
+            Console.WriteLine($"   StopIfGoingOnBatteries=false           : {(newBatteryStop ? "OK" : "FAIL 升级后拔电源会被停")}");
+            Console.WriteLine($"   ExecutionTimeLimit=PT0S (无限)         : {(newUnlimited ? "OK" : "FAIL 升级后仍会被强制结束")}");
+            Console.WriteLine($"   提示文字 = {oneLine}");
+
+            bool nowCurrent = mgr.IsUpToDate();
+            Console.WriteLine($"5. 重写后 IsUpToDate = {nowCurrent}  {(nowCurrent ? "OK 以后启动不再重复重写" : "FAIL 每次启动都会再跑一遍 schtasks")}");
+
+            bool pass = enabled && oldStale && newBatteryStart && newBatteryStop && newUnlimited && nowCurrent;
+            Console.WriteLine();
+            Console.WriteLine(pass ? "结果: 通过" : "结果: 失败");
+            return pass ? 0 : 1;
+        }
+        finally
+        {
+            // 无论成败都不要把测试任务留在系统里。
+            try { mgr.Disable(); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// 复刻 0.1.0 用 /SC ONLOGON 模板建出来的任务定义, 只保留与本次回归相关的两项缺陷设置。
+    /// </summary>
+    private static string BuildLegacyTaskXml(string exe)
+    {
+        string e = System.Security.SecurityElement.Escape(exe) ?? "";
+        string user = System.Security.SecurityElement.Escape(
+            System.Security.Principal.WindowsIdentity.GetCurrent().Name) ?? "";
+        var sb = new StringBuilder();
+        sb.Append("<?xml version=\"1.0\" encoding=\"UTF-16\"?>").Append(NL0);
+        sb.Append("<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">").Append(NL0);
+        sb.Append("  <RegistrationInfo><Description>legacy</Description></RegistrationInfo>").Append(NL0);
+        sb.Append("  <Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers>").Append(NL0);
+        sb.Append("  <Principals><Principal id=\"Author\"><UserId>").Append(user)
+          .Append("</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>").Append(NL0);
+        sb.Append("  <Settings>").Append(NL0);
+        sb.Append("    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>").Append(NL0);
+        sb.Append("    <DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>").Append(NL0);
+        sb.Append("    <StopIfGoingOnBatteries>true</StopIfGoingOnBatteries>").Append(NL0);
+        sb.Append("    <AllowHardTerminate>true</AllowHardTerminate>").Append(NL0);
+        sb.Append("    <StartWhenAvailable>false</StartWhenAvailable>").Append(NL0);
+        sb.Append("    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>").Append(NL0);
+        sb.Append("    <IdleSettings><StopOnIdleEnd>true</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>").Append(NL0);
+        sb.Append("    <AllowStartOnDemand>true</AllowStartOnDemand>").Append(NL0);
+        sb.Append("    <Enabled>true</Enabled>").Append(NL0);
+        sb.Append("    <Hidden>false</Hidden>").Append(NL0);
+        sb.Append("    <RunOnlyIfIdle>false</RunOnlyIfIdle>").Append(NL0);
+        sb.Append("    <WakeToRun>false</WakeToRun>").Append(NL0);
+        sb.Append("    <ExecutionTimeLimit>PT72H</ExecutionTimeLimit>").Append(NL0);
+        sb.Append("    <Priority>7</Priority>").Append(NL0);
+        sb.Append("  </Settings>").Append(NL0);
+        sb.Append("  <Actions Context=\"Author\"><Exec><Command>").Append(e)
+          .Append("</Command><Arguments>--tray</Arguments></Exec></Actions>").Append(NL0);
+        sb.Append("</Task>").Append(NL0);
+        return sb.ToString();
+    }
+
+    /// <summary>直接跑 schtasks.exe, 返回退出码与合并输出 (两流并发读, 避免 stderr 写满死锁)。</summary>
+    private static (int Exit, string Output) RunSchtasks(string args)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("schtasks.exe", args)
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            using var pr = System.Diagnostics.Process.Start(psi)!;
+            Task<string> errTask = pr.StandardError.ReadToEndAsync();
+            string outText = pr.StandardOutput.ReadToEnd();
+            string errText = errTask.GetAwaiter().GetResult();
+            if (!pr.WaitForExit(15000))
+            {
+                try { pr.Kill(entireProcessTree: true); } catch { }
+                return (-1, "schtasks 超时未返回, 已终止。");
+            }
+            return (pr.ExitCode, (outText + "\n" + errText).Trim());
+        }
+        catch (Exception ex)
+        {
+            return (-1, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 读指定计划任务的 &lt;Command&gt; 值。
+    ///
+    /// 按原始字节读出来再判断编码: schtasks 控制台输出的编码跟着代码页走,
+    /// 实测同一台机器上时而是 UTF-8 时而是 GBK, 固定按一种解会得到乱码。
+    /// </summary>
+    private static string ReadTaskCommand(string taskName)
+    {
+        string xml = ReadTaskXml(taskName);
+        int i = xml.IndexOf("<Command>", StringComparison.Ordinal);
+        if (i < 0) return "";
+        int j = xml.IndexOf("</Command>", i, StringComparison.Ordinal);
+        return j < 0 ? "" : xml.Substring(i + 9, j - i - 9).Trim();
+    }
+
+    /// <summary>
+    /// 读指定计划任务的完整 XML。读不到返回空串。
+    /// 编码判断与 ReadTaskCommand 原先的逻辑一致, 抽出来给需要断言多项设置的测试用。
+    /// </summary>
+    private static string ReadTaskXml(string taskName)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("schtasks.exe",
+                $"/Query /TN \"{taskName}\" /XML")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            using var pr = System.Diagnostics.Process.Start(psi)!;
+
+            using var ms = new System.IO.MemoryStream();
+            pr.StandardOutput.BaseStream.CopyTo(ms);
+            byte[] bytes = ms.ToArray();
+            pr.StandardError.BaseStream.CopyTo(System.IO.Stream.Null);
+            pr.WaitForExit(10000);
+
+            try
+            {
+                var strict = new System.Text.UTF8Encoding(false, throwOnInvalidBytes: true);
+                return strict.GetString(bytes);
+            }
+            catch (System.Text.DecoderFallbackException)
+            {
+                System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+                return System.Text.Encoding.GetEncoding(0).GetString(bytes);
+            }
+        }
+        catch { return ""; }
+    }
+    /// <summary>从 schtasks /XML 的输出里取某个节点的原始值, 取不到返回空串。</summary>
+    private static string XmlValue(string xml, string tag)
+    {
+        string open = "<" + tag + ">";
+        string close = "</" + tag + ">";
+        int i = xml.IndexOf(open, StringComparison.Ordinal);
+        if (i < 0) return "";
+        int j = xml.IndexOf(close, i + open.Length, StringComparison.Ordinal);
+        if (j < 0) return "";
+        return xml.Substring(i + open.Length, j - i - open.Length).Trim();
+    }
+
+    /// <summary>从 schtasks /XML 的输出里取某个节点的值并比对 (忽略大小写)。</summary>
+    private static bool HasXmlValue(string xml, string tag, string expected)
+    {
+        string open = "<" + tag + ">";
+        string close = "</" + tag + ">";
+        int i = xml.IndexOf(open, StringComparison.Ordinal);
+        if (i < 0) return false;
+        int j = xml.IndexOf(close, i + open.Length, StringComparison.Ordinal);
+        if (j < 0) return false;
+        string v = xml.Substring(i + open.Length, j - i - open.Length).Trim();
+        return string.Equals(v, expected, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string Show(string s) =>
