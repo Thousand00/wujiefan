@@ -25,6 +25,7 @@ namespace EcReadSmoke;
 ///   EcReadSmoke.exe --autostart-upgrade  旧版任务定义被重写修正的回归 (需管理员)
 ///   EcReadSmoke.exe --autostart-on       真正开启开机自启 (需管理员, 会留在系统里)
 ///   EcReadSmoke.exe --autostart-off      真正关闭开机自启 (需管理员)
+///   EcReadSmoke.exe --fanmode-live       真实切换 自动->强冷->自动 并校验回读 (需管理员, 会还原)
 /// </summary>
 internal static class Program
 {
@@ -36,7 +37,7 @@ internal static class Program
         TrySetUtf8Console();
 
         int seconds = 5;
-        bool json = false, aida = false, xmlOnly = false, peek = false, checkHw = false, autoStartTest = false, autoStartLive = false, autoStartCn = false, autoStartUpgrade = false;
+        bool json = false, aida = false, xmlOnly = false, peek = false, checkHw = false, autoStartTest = false, autoStartLive = false, autoStartCn = false, autoStartUpgrade = false, fanModeLive = false;
         string? autoStartOn = null;
 
         for (int i = 0; i < args.Length; i++)
@@ -52,6 +53,7 @@ internal static class Program
                 case "--autostart-live": autoStartLive = true; break;
                 case "--autostart-cn": autoStartCn = true; break;
                 case "--autostart-upgrade": autoStartUpgrade = true; break;
+                case "--fanmode-live": fanModeLive = true; break;
                 case "--autostart-on":
                     autoStartOn = i + 1 < args.Length ? args[++i] : @"E:\WORKS\RTSS-0\dist\app\WujieFan.exe";
                     break;
@@ -74,6 +76,8 @@ internal static class Program
         if (autoStartLive) return RunAutoStartLive();
         if (autoStartCn) return RunAutoStartChinese();
         if (autoStartUpgrade) return RunAutoStartUpgrade();
+        if (fanModeLive) return RunFanModeLive();
+
         if (autoStartOn is not null) return RunAutoStartSet(autoStartOn);
 
         if (checkHw) return RunCheckHw();
@@ -649,6 +653,89 @@ internal static class Program
     }
 
     /// <summary>直接把真实的自启动任务开/关掉 (exePath 为空表示关闭), 关掉时不动其它设置。</summary>
+    /// <summary>
+    /// 真实切换一次 自动 -> 强冷 -> 自动, 校验每一步 EC 回读是否与请求一致。
+    ///
+    /// 这是产品代码路径 (FanReader.SetMode) 的端到端回归,
+    /// 与 tests/FanControlLab 那个实验台不是同一份实现。
+    /// 结束时无论成败都把风扇交还自动模式。
+    /// </summary>
+    private static int RunFanModeLive()
+    {
+        byte[] blob = LoadLpcIoBlob();
+        using var reader = new FanReader(blob);
+
+        try { reader.Open(); }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine("打开设备失败: " + ex.Message);
+            return 2;
+        }
+
+        int pass = 0, fail = 0;
+
+        void Check(string what, bool ok, string detail)
+        {
+            Console.WriteLine((ok ? "[PASS] " : "[FAIL] ") + what + ": " + detail);
+            if (ok) pass++; else fail++;
+        }
+
+        FanModeState original = reader.ReadModeState();
+        Console.WriteLine("=== 风扇两档控制 ===");
+        Console.WriteLine("切换前实际模式: " + FanReader.Describe(original));
+
+        try
+        {
+            // --- 1. 切到强冷 ---
+            FanModeResult r1 = reader.SetMode(FanMode.StrongCool);
+            Check("SetMode(StrongCool)", r1.Ok, r1.Message + " / " + FanReader.Describe(r1.State));
+
+            FanSample hot = reader.Read();
+            Check("强冷回读标志", hot.Mode == FanModeState.StrongCool, FanReader.Describe(hot.Mode));
+
+            int rpm1Hot = hot.Fans.Count > 0 ? hot.Fans[0].Rpm : 0;
+            int rpm2Hot = hot.Fans.Count > 1 ? hot.Fans[1].Rpm : 0;
+            Console.WriteLine($"  强冷采样: {hot.Temperature}C  Fan1 {rpm1Hot} RPM  Fan2 {rpm2Hot} RPM");
+
+            // 满转需要一点时间, 再等 3 秒取一次。
+            Thread.Sleep(3000);
+            FanSample hot2 = reader.Read();
+            int rpm1b = hot2.Fans.Count > 0 ? hot2.Fans[0].Rpm : 0;
+            int rpm2b = hot2.Fans.Count > 1 ? hot2.Fans[1].Rpm : 0;
+            Console.WriteLine($"  3 秒后: {hot2.Temperature}C  Fan1 {rpm1b} RPM  Fan2 {rpm2b} RPM");
+
+            // 184/184 理想值是 5650 左右; 留足余量, 只要明显高于怠速即可。
+            Check("强冷转速确实拉高", rpm1b > 4500 && rpm2b > 4500,
+                $"Fan1 {rpm1b} / Fan2 {rpm2b} (期望都 > 4500)");
+
+            // --- 2. 交还自动 ---
+            FanModeResult r2 = reader.SetMode(FanMode.Auto);
+            Check("SetMode(Auto)", r2.Ok, r2.Message + " / " + FanReader.Describe(r2.State));
+
+            FanSample idle = reader.Read();
+            Check("恢复自动后的标志", idle.Mode == FanModeState.Auto, FanReader.Describe(idle.Mode));
+
+            Thread.Sleep(4000);
+            FanSample idle2 = reader.Read();
+            int rpm1c = idle2.Fans.Count > 0 ? idle2.Fans[0].Rpm : 0;
+            int rpm2c = idle2.Fans.Count > 1 ? idle2.Fans[1].Rpm : 0;
+            Console.WriteLine($"  恢复 4 秒后: {idle2.Temperature}C  Fan1 {rpm1c} RPM  Fan2 {rpm2c} RPM");
+
+            // 60C 上下时自动模式大约 3000-3600 RPM, 低于强冷的 5600。
+            Check("自动模式转速已回落", rpm1c < 5200 && rpm2c < 5200,
+                $"Fan1 {rpm1c} / Fan2 {rpm2c} (期望都 < 5200)");
+        }
+        finally
+        {
+            // 无论前面哪一步炸了, 这里都要把风扇交还自动。
+            FanModeResult restore = reader.SetMode(FanMode.Auto);
+            Console.WriteLine("[恢复] " + restore.Message + " / " + FanReader.Describe(restore.State));
+        }
+
+        Console.WriteLine($"结果: 通过 {pass} / 失败 {fail}");
+        return fail == 0 ? 0 : 1;
+    }
+
     private static int RunAutoStartSet(string exePath)
     {
         bool enable = exePath.Length > 0;

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using WujieFan.Core.Ec;
 
 namespace WujieFan.Core.Config;
 
@@ -19,6 +20,12 @@ public sealed class AppSettings
 
     /// <summary>跳过机型校验。只有用户明知风险并手动开启才为 true。</summary>
     public bool ForceUnsupported { get; set; }
+
+    /// <summary>
+    /// 上次选择的扇热模式。启动时按它做归一化: 自动就确保标志是 0x00,
+    /// 强冷就重新写一遍满转 —— 这样"关机时是什么状态"不再取决于上次进程死得干不干净。
+    /// </summary>
+    public FanMode FanMode { get; set; } = FanMode.Auto;
 
     private static string Dir =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WujieFan");

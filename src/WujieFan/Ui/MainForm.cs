@@ -23,7 +23,9 @@ public sealed class MainForm : Form
     private readonly Label _fan2Value = new();
     private readonly Label _tempValue = new();
     private readonly Label _statusLabel = new();
+    private readonly Label _fanModeState = new();
     private readonly CheckBox _autoStartCheck = new();
+    private readonly CheckBox _strongCoolCheck = new();
 
     private readonly System.Windows.Forms.Timer _timer = new();
 
@@ -37,6 +39,18 @@ public sealed class MainForm : Form
 
     /// <summary>正在回填界面初始状态, 此时不应把 CheckedChanged 当成用户操作。</summary>
     private bool _suppressAutoStartEvent;
+
+    /// <summary>正在回填强冷勾选状态, 同理不能当成用户操作。</summary>
+    private bool _suppressFanModeEvent;
+
+    /// <summary>正在执行模式切换 (含读回校验), 期间忽略重入。</summary>
+    private bool _fanModeBusy;
+
+    /// <summary>连续多少次采样温度达到看门狗阈值。只在强冷模式下累计。</summary>
+    private int _hotSamples;
+
+    /// <summary>已经因过热自动交还过 EC, 本轮不再重复弹提示。</summary>
+    private bool _emergencyRestored;
 
     /// <summary>上一次尝试重建 AIDA64 共享内存的刻度, 用来给重建加退避。</summary>
     private long _lastAidaTryTicks;
@@ -70,6 +84,7 @@ public sealed class MainForm : Form
         FormClosing += OnFormClosing;
         Resize += OnFormResize;
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        SystemEvents.SessionEnding += OnSessionEnding;
     }
 
     private void BuildUi()
@@ -78,7 +93,7 @@ public sealed class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
-        ClientSize = new Size(420, 300);
+        ClientSize = new Size(420, 340);
         Font = new Font("Microsoft YaHei UI", 9F);
 
         var title = new Label
@@ -156,15 +171,31 @@ public sealed class MainForm : Form
             ApplyPublishMode();
         };
 
+        _strongCoolCheck.Text = "强冷模式 (两个风扇满转)";
+        _strongCoolCheck.Location = new Point(20, 234);
+        _strongCoolCheck.AutoSize = true;
+        _strongCoolCheck.CheckedChanged += OnStrongCoolChanged;
+
+        // 实际模式由 EC 寄存器回读得出, 与服务端设置分开显示:
+        // 用户勾了强冷却因为被别的程序改写而实际是自动时, 这里必须看得出来。
+        _fanModeState.Text = "";
+        _fanModeState.ForeColor = Color.Gray;
+        // 单独占右侧一列: 勾选框文字是 AutoSize 的, 让它自己排版会和勾选框重叠。
+        _fanModeState.Location = new Point(288, 236);
+        _fanModeState.Size = new Size(112, 20);
+        _fanModeState.TextAlign = ContentAlignment.MiddleRight;
+        _fanModeState.AutoSize = false;
+
         _statusLabel.Text = "正在初始化...";
         _statusLabel.ForeColor = Color.Gray;
-        _statusLabel.Location = new Point(20, 244);
-        _statusLabel.Size = new Size(380, 48);
+        _statusLabel.Location = new Point(20, 262);
+        _statusLabel.Size = new Size(380, 60);
 
         Controls.AddRange(new Control[]
         {
             title, model, _fan1Value, fan1Caption, _fan2Value, fan2Caption,
-            _tempValue, tempCaption, _autoStartCheck, rtssCheck, _statusLabel,
+            _tempValue, tempCaption, _autoStartCheck, rtssCheck,
+            _strongCoolCheck, _fanModeState, _statusLabel,
         });
     }
 
@@ -198,6 +229,10 @@ public sealed class MainForm : Form
     {
         var menu = new ContextMenuStrip();
         menu.Items.Add("显示主窗口", null, (_, _) => RestoreFromTray());
+
+        // 逃生口: 不论程序内部状态如何, 点一下就把 EC 交还自动。
+        // 面板上那个勾选框万一因为界面卡住点不动, 这里是最后一条路。
+        menu.Items.Add("恢复自动风扇", null, (_, _) => EmergencyRestoreAuto("托盘菜单"));
         menu.Items.Add("重新检测机型", null, (_, _) => RetryHardwareCheck());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("退出 WujieFan", null, (_, _) => ExitApplication());
@@ -246,6 +281,12 @@ public sealed class MainForm : Form
 
     private void ExitApplication()
     {
+        // 退出前主动交还风扇控制权。冷启动确实会复位 EC, 但"重启" (软复位) 不会 ——
+        // 不在退出时收手, 用户点了退出还以为风扇已经回到自动, 实际还在满转。
+        // 这一步失败也不阻止退出: 卡在满转只是吵, 而不让用户退出才是真正的问题。
+        if (_reader is { IsOpen: true } && _reader.ReadModeState() == FanModeState.StrongCool)
+            EmergencyRestoreAuto("程序退出");
+
         _exiting = true;
         Close();
     }
@@ -297,12 +338,55 @@ public sealed class MainForm : Form
         // OpenReader 内部已经按需建好共享内存, 这里不必再调一次。
         OpenReader();
 
+        // 按设置做一次模式归一化。放在 OpenReader 之后、定时器启动之前:
+        //   - 上次正常退出已经把模式交还自动了, 这里只是核对一遍;
+        //   - 上次是被强杀/蓝屏留下的, 这里负责把状态拉回设置所说的样子。
+        NormalizeFanModeOnStartup();
+
         _timer.Start();
         OnTick(null, EventArgs.Empty);
 
         // 开机自启动时不弹窗打扰, 直接进托盘。手动启动则正常显示窗口,
         // 用户点关闭键时再按 MinimizeToTray 决定是缩托盘还是退出。
         if (_startMinimized) HideToTray();
+    }
+
+    /// <summary>
+    /// 启动时把 EC 拉到"设置里记着的模式"。
+    ///
+    /// 这条规则同时覆盖了几种历史残留:
+    ///   设置=自动  -> 若 EC 还停在上次的 0xDC, 写回 0x00 (强杀、蓝屏、手动杀的残留)
+    ///   设置=强冷  -> 重新写一遍满转 (软重启不清 EC RAM, 但我们要保证值是对的)
+    /// 换句话说: 开机后是什么状态, 由设置决定, 而不是由"上次进程死得干不干净"决定。
+    /// </summary>
+    private void NormalizeFanModeOnStartup()
+    {
+        if (_reader is null || !_reader.IsOpen)
+        {
+            UpdateFanModeUi(FanModeState.Unknown);
+            return;
+        }
+
+        FanModeState actual = _reader.ReadModeState();
+        FanMode want = _settings.FanMode;
+
+        _suppressFanModeEvent = true;
+        try { _strongCoolCheck.Checked = want == FanMode.StrongCool; }
+        finally { _suppressFanModeEvent = false; }
+
+        // 值和意愿已经一致, 不必再写 EC —— 少一次写入就少一次出错机会。
+        bool matches = want == FanMode.StrongCool
+            ? actual == FanModeState.StrongCool
+            : actual == FanModeState.Auto;
+
+        if (matches)
+        {
+            UpdateFanModeUi(actual);
+            return;
+        }
+
+        // 归一化失败不该弹框打断开机, 但必须留下可见痕迹。
+        SetFanMode(want, userInitiated: false, reason: "已按设置恢复自动模式 (清理上次残留)。");
     }
 
     private static string DescribeMachine()
@@ -437,6 +521,19 @@ public sealed class MainForm : Form
 
         _tempValue.Text = sample.Temperature?.ToString() ?? "--";
 
+        // 每秒用 EC 回读的真实模式校准界面。
+        // 别的程序 (或用户自己用实验工具) 把标志改掉时, 这里能立刻反映出来,
+        // 而不是让勾选框一直停在一个不存在的状态上。
+        if (!_fanModeBusy)
+        {
+            UpdateFanModeUi(sample.Mode);
+            _suppressFanModeEvent = true;
+            try { _strongCoolCheck.Checked = sample.Mode == FanModeState.StrongCool; }
+            finally { _suppressFanModeEvent = false; }
+        }
+
+        CheckThermalWatchdog(sample);
+
         if (_settings.PublishToRtss)
         {
             // 上一轮写失败把 _aida 扔掉之后必须在这里重建, 否则供数会永久停掉:
@@ -459,6 +556,40 @@ public sealed class MainForm : Form
                     SetStatus("向 RTSS 供数失败: " + ex.Message, Color.DarkOrange);
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// 温度看门狗。强冷是"只升不降", 所以它不会制造过热 ——
+    /// 这个看门狗防的是另一类意外: EC 不接受手动 PWM、或者别的软件把标志改回自动后
+    /// 我们仍在界面上显示"强冷中"。
+    ///
+    /// 触发条件必须连续多次达到阈值: 单次尖峰 (编译、游戏加载) 不该打断用户的强冷。
+    /// </summary>
+    private void CheckThermalWatchdog(FanSample sample)
+    {
+        // 已经交还过一次就不再反复触发, 否则每 3 秒弹一个框。
+        if (_emergencyRestored) return;
+
+        if (sample.Mode != FanModeState.StrongCool || sample.Temperature is not int t)
+        {
+            _hotSamples = 0;
+            return;
+        }
+
+        if (t < EcRegisters.EmergencyTemperatureC)
+        {
+            _hotSamples = 0;
+            return;
+        }
+
+        _hotSamples++;
+
+        if (_hotSamples >= EcRegisters.EmergencyHoldSamples)
+        {
+            _hotSamples = 0;
+            UiLog($"过热保护触发: {t}C 连续 {EcRegisters.EmergencyHoldSamples} 次, 交还自动模式");
+            EmergencyRestoreAuto("过热保护");
         }
     }
 
@@ -507,6 +638,179 @@ public sealed class MainForm : Form
         {
             _aida?.Dispose();
             _aida = null;
+        }
+    }
+
+    /// <summary>
+    /// 用户勾选/取消强冷。
+    ///
+    /// 失败时必须把勾选状态回滚 —— 界面显示"强冷中"而 EC 其实还在自动,
+    /// 是这套功能里最危险的假象。
+    /// </summary>
+    private void OnStrongCoolChanged(object? sender, EventArgs e)
+    {
+        if (_suppressFanModeEvent) return;
+        if (_fanModeBusy) return;
+
+        bool want = _strongCoolCheck.Checked;
+        SetFanMode(want ? FanMode.StrongCool : FanMode.Auto, userInitiated: true);
+    }
+
+    /// <summary>
+    /// 执行一次模式切换并同步界面。返回是否成功。
+    /// </summary>
+    /// <param name="userInitiated">
+    /// 用户点击时为 true, 失败要弹框说明; 启动归一化/看门狗为 false, 只写状态栏。
+    /// </param>
+    private bool SetFanMode(FanMode mode, bool userInitiated, string? reason = null)
+    {
+        if (_fanModeBusy) return false;
+
+        if (_reader is null || !_reader.IsOpen)
+        {
+            if (userInitiated)
+                MessageBox.Show(this, "设备还没打开, 现在不能切换风扇模式。", "WujieFan",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            RevertFanModeCheck();
+            return false;
+        }
+
+        _fanModeBusy = true;
+        try
+        {
+            FanModeResult r = _reader.SetMode(mode);
+
+            // 无论成败都按设置里的真实意图落盘: 失败时保留用户的选择,
+            // 下次启动的归一化会再试一次, 而不是把用户的意愿悄悄忘掉。
+            _settings.FanMode = mode;
+            _settings.Save();
+
+            UpdateFanModeUi(r.State);
+
+            if (r.Ok)
+            {
+                _hotSamples = 0;
+                if (mode == FanMode.StrongCool)
+                {
+                    _emergencyRestored = false;
+                    SetStatus("强冷已开启: 两个风扇满转 (约 5700 RPM), 温度会明显下降。", Color.DarkGreen);
+                }
+                else
+                {
+                    SetStatus(reason is null ? "已交还自动模式, 由 EC 按温度曲线调速。" : reason, Color.DimGray);
+                }
+
+                return true;
+            }
+
+            SetStatus(r.Message, Color.DarkOrange);
+
+            if (userInitiated)
+                MessageBox.Show(this, r.Message, "WujieFan - 风扇模式切换失败",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+
+            RevertFanModeCheck();
+            return false;
+        }
+        finally
+        {
+            _fanModeBusy = false;
+        }
+    }
+
+    /// <summary>把勾选框拉回 EC 的真实状态, 而不是设置里的意愿。</summary>
+    private void RevertFanModeCheck()
+    {
+        FanModeState actual = _reader?.ReadModeState() ?? FanModeState.Unknown;
+        UpdateFanModeUi(actual);
+
+        _suppressFanModeEvent = true;
+        try { _strongCoolCheck.Checked = actual == FanModeState.StrongCool; }
+        finally { _suppressFanModeEvent = false; }
+    }
+
+    /// <summary>按 EC 回读到的真实模式刷新文字与勾选。</summary>
+    private void UpdateFanModeUi(FanModeState state)
+    {
+        switch (state)
+        {
+            case FanModeState.Auto:
+                _fanModeState.Text = "实际: 自动";
+                _fanModeState.ForeColor = Color.Gray;
+                break;
+
+            case FanModeState.StrongCool:
+                _fanModeState.Text = "实际: 强冷";
+                _fanModeState.ForeColor = Color.DarkGreen;
+                break;
+
+            case FanModeState.Mixed:
+                _fanModeState.Text = "实际: 异常标志";
+                _fanModeState.ForeColor = Color.DarkOrange;
+                break;
+
+            default:
+                _fanModeState.Text = "";
+                _fanModeState.ForeColor = Color.Gray;
+                break;
+        }
+    }
+
+    /// <summary>
+    /// 强制交还自动模式。托盘菜单、过热看门狗、退出程序都走这里。
+    ///
+    /// 与 SetFanMode 的区别: 它不看 _settings、不回读校验失败就重试,
+    /// 而且即使设备已经打不开也照样把设置改成 Auto —— 下次启动会再归一化一次。
+    /// 逃生口必须比"正常路径"更难失败。
+    /// </summary>
+    private void EmergencyRestoreAuto(string why)
+    {
+        _settings.FanMode = FanMode.Auto;
+        _settings.Save();
+
+        _suppressFanModeEvent = true;
+        try { _strongCoolCheck.Checked = false; }
+        finally { _suppressFanModeEvent = false; }
+
+        if (_reader is { IsOpen: true })
+        {
+            FanModeResult r = _reader.SetMode(FanMode.Auto);
+            UpdateFanModeUi(r.State);
+
+            if (!r.Ok)
+            {
+                UiLog("EmergencyRestoreAuto FAILED (" + why + "): " + r.Message);
+                SetStatus("恢复自动风扇失败: " + r.Message, Color.Firebrick);
+                return;
+            }
+        }
+        else
+        {
+            UpdateFanModeUi(FanModeState.Unknown);
+        }
+
+        UiLog("EmergencyRestoreAuto (" + why + ") ok");
+
+        if (why == "过热保护")
+        {
+            SetStatus("温度过高, 已自动交还风扇控制权给 EC。", Color.DarkOrange);
+            _emergencyRestored = true;
+            if (!_settings.MinimizeToTray || Visible)
+            {
+                MessageBox.Show(this,
+                    $"CPU 温度连续 {EcRegisters.EmergencyHoldSamples} 次达到 {EcRegisters.EmergencyTemperatureC}°C 以上, " +
+                    "已自动关闭强冷模式, 把风扇交还给 EC 固件调速。\n\n" +
+                    "如果温度仍然偏高, 请检查散热口是否被挡住。",
+                    "WujieFan - 过热保护", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+        else if (why == "程序退出")
+        {
+            // 退出时写状态栏没意义, 窗口马上就没了, 只记日志。
+        }
+        else
+        {
+            SetStatus("已交还自动模式 (" + why + ")。", Color.DimGray);
         }
     }
 
@@ -608,6 +912,22 @@ public sealed class MainForm : Form
         OnResume();
     }
 
+    /// <summary>
+    /// 注销 / 关机。这是最后一个能写 EC 的时机 —— 之后的复位是冷启动,
+    /// 但"重启"不算冷启动, 会把手动标志留在 RAM 里。
+    /// 这里主动交还, 让重启后的表现也可预期。
+    /// </summary>
+    private void OnSessionEnding(object sender, SessionEndingEventArgs e)
+    {
+        if (_disposedUi) return;
+
+        // 系统事件线程上不能碰控件, 但既然窗口马上要销毁, 直接写 EC 就够了。
+        RestoreAutoOnShutdown();
+
+        _settings.FanMode = FanMode.Auto;
+        _settings.Save();
+    }
+
     private void OnResume()
     {
         if (_disposedUi) return;
@@ -618,6 +938,25 @@ public sealed class MainForm : Form
         ApplyPublishMode();
         _timer.Start();
         OnTick(null, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// 关闭时最后一次交还自动模式。不更新界面 (窗口正在销毁), 只写日志。
+    /// </summary>
+    private void RestoreAutoOnShutdown()
+    {
+        try
+        {
+            if (_reader is not { IsOpen: true }) return;
+            if (_reader.ReadModeState() != FanModeState.StrongCool) return;
+
+            FanModeResult r = _reader.SetMode(FanMode.Auto);
+            UiLog("RestoreAutoOnShutdown: " + (r.Ok ? "ok" : r.Message));
+        }
+        catch (Exception ex)
+        {
+            UiLog("RestoreAutoOnShutdown EXCEPTION: " + ex.Message);
+        }
     }
 
     private void CloseReader()
@@ -632,7 +971,13 @@ public sealed class MainForm : Form
         {
             _disposedUi = true;
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+            SystemEvents.SessionEnding -= OnSessionEnding;
             _timer.Stop();
+
+            // 兜底: 走到 Dispose 说明监听的窗口已经关了, 无论如何不该把 EC 留在手动模式。
+            // 正常情况下 ExitApplication 已经交还过了, 这里再核对一次是幂等且便宜的。
+            RestoreAutoOnShutdown();
+
             _timer.Dispose();
             CloseReader();
             _aida?.Dispose();

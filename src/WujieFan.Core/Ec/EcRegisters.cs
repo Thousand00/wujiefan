@@ -3,7 +3,9 @@ namespace WujieFan.Core.Ec;
 /// <summary>
 /// MECHREVO 无界14+ (ARN39P-TF, Ryzen 7 7840HS, ITE EC) 的寄存器地址。
 /// 全部来自对 32MB SPI 固件 (EC 固件位于 ROM 0x000000-0x05FFFF) 的逆向与实测。
-/// 本软件只读这些地址, 绝不写入。
+///
+/// 其中只读地址用于采样; 模式标志与手动 PWM 值用于"强冷"两档控制,
+/// 只有显式开启强冷时才会写, 且务必先写 PWM 值再写模式标志 (顺序见 FanModeControl)。
 /// </summary>
 public static class EcRegisters
 {
@@ -33,4 +35,22 @@ public static class EcRegisters
 
     /// <summary>I2EC 端口基址候选。0x4E 的 EC 槽位为 1, 0x2E 为 0。</summary>
     public static readonly (ushort Base, int Slot)[] PortBases = { (0x4E, 1), (0x2E, 0) };
+
+    /// <summary>风扇 1 手动 PWM 值。只在模式标志为 0xDC 时被 EC 采信。</summary>
+    public const ushort ManualPwm1 = 0x021E;
+
+    /// <summary>风扇 2 手动 PWM 值。</summary>
+    public const ushort ManualPwm2 = 0x029E;
+
+    /// <summary>风扇 1 模式标志: 0x00 自动 / 0xA5 自定义曲线 / 0xCC 自定义温度 / 0xDC 手动 PWM。</summary>
+    public const ushort ModeFlag1 = 0x021F;
+
+    /// <summary>风扇 2 模式标志。</summary>
+    public const ushort ModeFlag2 = 0x029F;
+
+    /// <summary>温度看门狗阈值。达到这个温度且持续数秒, 强冷模式立即交还 EC。</summary>
+    public const int EmergencyTemperatureC = 92;
+
+    /// <summary>连续多少次采样达到阈值才动手。单次尖峰 (例如编译瞬间) 不该触发。</summary>
+    public const int EmergencyHoldSamples = 3;
 }

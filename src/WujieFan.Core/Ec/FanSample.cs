@@ -37,6 +37,9 @@ public sealed class FanSample
     public IReadOnlyList<FanReading> Fans { get; init; } = Array.Empty<FanReading>();
     public string? Error { get; init; }
 
+    /// <summary>采样时 EC 里实际的风扇模式。界面据此显示真实状态, 而不是程序以为的状态。</summary>
+    public FanModeState Mode { get; init; } = FanModeState.Unknown;
+
     public bool HasData => Error is null && Fans.Count > 0;
 
     /// <summary>把转速计数器换算成 RPM。规则与已验证实现一致。</summary>
