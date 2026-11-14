@@ -1,6 +1,5 @@
 using System.Drawing;
 using System.Drawing.Drawing2D;
-using System.Runtime.InteropServices;
 using Microsoft.Win32;
 using System.Windows.Forms;
 using WujieFan.Core.Config;
@@ -185,6 +184,7 @@ public sealed class MainForm : Form
         }
         catch (Exception ex)
         {
+            UiLog("CreateTrayIcon FAILED: " + ex);
             // 托盘建不出来时至少要把窗口留住, 否则关掉窗口就再也找不回来了。
             _settings.MinimizeToTray = false;
             _trayIcon = null;
@@ -192,6 +192,8 @@ public sealed class MainForm : Form
         }
     }
 
+    /// <summary>把异常写进 %LOCALAPPDATA%\WujieFan\ui.log, 便于排查"程序突然没了"这类问题。</summary>
+    internal static void UiLog(string message) => WujieFan.Program.UiLog(message);
     private ContextMenuStrip BuildTrayMenu()
     {
         var menu = new ContextMenuStrip();

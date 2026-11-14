@@ -9,8 +9,17 @@ namespace WujieFan.Core.Config;
 ///
 /// 实现方式是用计划任务 (WujieFan) 而不是注册表 Run 键, 原因:
 ///   1. 本程序需要管理员权限, 注册表 Run 键在 UAC 下会被系统拦截不提升,
-///      结果是开机后弹不出界面、也读不到风扇。计划任务可以指定"最高权限运行"。
+///      结果是开机后弹不出界面、也读不到风扇。
 ///   2. 计划任务对用户可见 (任务计划程序里能看到), 容易检查和删除, 比注册表透明。
+///
+/// 关键: 计划任务<b>不能</b>直接以最高权限运行 WujieFan.exe。
+/// 任务计划程序拉起的进程会被放进一个带 UI 限制的 job 对象, 其中的
+/// Shell_NotifyIcon(NIM_ADD) 直接返回 ERROR_ACCESS_DENIED(5), 托盘图标永远不出现,
+/// 而且这个限制会被所有子进程继承 —— 无论任务本身是 Highest 还是 Limited 都一样。
+///
+/// 所以任务改为: 普通权限运行同目录的 WujieFanLauncher.exe(纯 asInvoker),
+/// 由它再调 ShellExecuteEx("runas") 真正经 AppInfo 提权拉起 WujieFan.exe。
+/// 只有 AppInfo 新建的进程才不会继承那个受限 job。详见 WujieFan.Launcher 的注释。
 ///
 /// 安全约定: 只操作名为 WujieFan 的计划任务; 若同名任务已存在但指向别的程序,
 /// 一律拒绝覆盖, 并且不删除它。
@@ -19,6 +28,9 @@ public sealed class AutoStartManager
 {
     public const string TaskName = "WujieFan";
 
+    /// <summary>启动器的文件名。它必须和 WujieFan.exe 放在同一目录。</summary>
+    public const string LauncherFileName = "WujieFanLauncher.exe";
+
     private readonly string _exePath;
     private readonly string _taskName;
 
@@ -26,6 +38,20 @@ public sealed class AutoStartManager
     {
         _exePath = exePath ?? Environment.ProcessPath ?? "";
         _taskName = string.IsNullOrWhiteSpace(taskName) ? TaskName : taskName!;
+    }
+
+    /// <summary>
+    /// 计划任务里真正要执行的程序: 同目录的启动器, 而不是 WujieFan.exe 本身。
+    /// 找不到 WujieFan.exe 所在目录时返回空串。
+    /// </summary>
+    public string LauncherPath
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(_exePath)) return "";
+            string? dir = Path.GetDirectoryName(_exePath);
+            return string.IsNullOrEmpty(dir) ? "" : Path.Combine(dir, LauncherFileName);
+        }
     }
 
     /// <summary>本实例操作的计划任务名。默认是 WujieFan, 测试里可以换成别的名字。</summary>
@@ -48,13 +74,20 @@ public sealed class AutoStartManager
     }
 
     /// <summary>
-    /// 现有任务是否已经符合当前版本的要求 (电池策略为 false、执行时限无限)。
-    /// 用来避免每次启动都跑一遍 schtasks 重写 —— 用户没改过配置就不该动系统。
-    /// 读不到任务时返回 false, 让调用方走重写路径兜底。
+    /// 现有任务是否已经符合当前版本的要求。用来避免每次启动都跑一遍 schtasks
+    /// 重写 —— 用户没改过配置就不该动系统。读不到任务时返回 false, 让调用方走重写路径兜底。
+    ///
+    /// 要同时满足四条, 少一条就得重写:
+    ///   1. 执行时限无限 (ExecutionTimeLimit=PT0S) —— 否则跑满 72 小时会被悄悄结束
+    ///   2. 电池上也要启动 (DisallowStartIfOnBatteries=false)
+    ///   3. 切到电池时不要停 (StopIfGoingOnBatteries=false)
+    ///   4. 以普通权限运行启动器 (RunLevel=LeastPrivilege 且 Command 指向启动器)
+    /// 第 4 条是 0.2.0 新增的: 0.1.x 建的任务是 HighestAvailable + 直指 WujieFan.exe,
+    /// 那份定义会让托盘图标永远不出现, 必须被重写升级。
     /// </summary>
     public bool IsUpToDate()
     {
-        var (exists, _) = QueryTask();
+        var (exists, command) = QueryTask();
         if (!exists) return false;
 
         string xml = QueryTaskXml();
@@ -65,9 +98,20 @@ public sealed class AutoStartManager
         bool noLimit = XmlValue(xml, "ExecutionTimeLimit") is { Length: > 0 } limit
                        && limit.StartsWith("PT0", StringComparison.OrdinalIgnoreCase);
 
+        bool runsLauncher = SamePath(ExtractExecutable(command), LauncherPath);
+
+        // 同理: RunLevel 等于默认值 LeastPrivilege 时 /Query /XML 会把整个节点省掉
+        // (实测 Limited 任务没有 <RunLevel>, Highest 任务才有 <RunLevel>HighestAvailable</RunLevel>)。
+        // 所以"没有这个节点"必须算通过, 否则 IsUpToDate 永远为 false, 每次启动都重写一遍任务。
+        string runLevel = XmlValue(xml, "RunLevel");
+        bool leastPrivilege = runLevel.Length == 0
+                              || string.Equals(runLevel, "LeastPrivilege", StringComparison.OrdinalIgnoreCase);
+
         return noLimit
                && IsXmlFalse(xml, "DisallowStartIfOnBatteries")
-               && IsXmlFalse(xml, "StopIfGoingOnBatteries");
+               && IsXmlFalse(xml, "StopIfGoingOnBatteries")
+               && runsLauncher
+               && leastPrivilege;
     }
 
     private static string XmlValue(string xml, string tag)
@@ -84,11 +128,23 @@ public sealed class AutoStartManager
     private static bool IsXmlFalse(string xml, string tag) =>
         string.Equals(XmlValue(xml, tag), "false", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>创建计划任务, 登录时以最高权限启动本程序。</summary>
+    /// <summary>
+    /// 创建计划任务: 登录时以普通权限运行启动器, 由启动器经 UAC 提权拉起主程序。
+    /// 直接以最高权限运行主程序会让托盘图标永远不出现, 见类注释。
+    /// </summary>
     public Result Enable()
     {
         if (string.IsNullOrEmpty(_exePath))
             return new Result(false, "无法确定本程序路径, 不能创建自启动项。");
+
+        string launcher = LauncherPath;
+        if (launcher.Length == 0)
+            return new Result(false, "无法确定启动器路径, 不能创建自启动项。");
+
+        if (!File.Exists(launcher))
+            return new Result(false,
+                "缺少启动器文件:\n" + launcher + "\n" +
+                "它必须和 WujieFan.exe 放在同一个目录。请重新解压完整的发布包。");
 
         var (exists, command) = QueryTask();
 
@@ -112,7 +168,7 @@ public sealed class AutoStartManager
         //   DisallowStartIfOnBatteries=true  -> 笔记本不接电源时干脆不启动
         //   ExecutionTimeLimit=PT72H        -> 连续跑满 72 小时会被任务计划程序结束掉
         // 后者尤其隐蔽: 风扇监控是要长期常驻的, 三天后突然没了读数, 很难联想到计划任务。
-        string xml = BuildTaskXml(_exePath);
+        string xml = BuildTaskXml(launcher);
         string? tmp = null;
 
         try
@@ -128,7 +184,7 @@ public sealed class AutoStartManager
                 return new Result(false, $"创建计划任务失败 (退出码 {r.Exit}):\n{r.Output}");
 
             string verb = updating ? "已更新" : "已启用";
-            return new Result(true, $"{verb}: 登录 Windows 时自动以管理员身份启动。\n计划任务名称: {_taskName}");
+            return new Result(true, $"{verb}: 登录 Windows 时自动启动 (会弹一次 UAC 确认)。\n计划任务名称: {_taskName}");
         }
         catch (Exception ex)
         {
@@ -171,18 +227,19 @@ public sealed class AutoStartManager
     /// 除下面注释里点名的那几项, 其余都取 schtasks 的 ONLOGON 模板默认值, 以便
     /// 界面表现与"新建任务向导"一致, 用户去任务计划程序里看不会感到陌生。
     /// </summary>
-    private static string BuildTaskXml(string exePath)
+    /// <param name="launcherPath">要执行的启动器完整路径 (不是 WujieFan.exe)。</param>
+    private static string BuildTaskXml(string launcherPath)
     {
         // 必须以当前用户身份运行在交互式会话里: 本程序要弹窗口, 用 SYSTEM 或
         // 服务账户启动会看不见界面, 托盘图标也不会出现。
         string user = System.Security.Principal.WindowsIdentity.GetCurrent().Name;
-        string escapedExe = System.Security.SecurityElement.Escape(exePath) ?? exePath;
+        string escapedExe = System.Security.SecurityElement.Escape(launcherPath) ?? launcherPath;
 
         return $"""
             <?xml version="1.0" encoding="UTF-16"?>
             <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
               <RegistrationInfo>
-                <Description>WujieFan - 无界14+ 风扇转速监控, 开机后以管理员身份启动并驻留托盘。</Description>
+                <Description>WujieFan - 无界14+ 风扇转速监控。开机时以普通权限运行启动器, 由启动器经 UAC 提权拉起主程序并驻留托盘。</Description>
               </RegistrationInfo>
               <Triggers>
                 <LogonTrigger>
@@ -193,7 +250,13 @@ public sealed class AutoStartManager
                 <Principal id="Author">
                   <UserId>{System.Security.SecurityElement.Escape(user)}</UserId>
                   <LogonType>InteractiveToken</LogonType>
-                  <RunLevel>HighestAvailable</RunLevel>
+                  <!--
+                    必须是 LeastPrivilege。任务计划程序拉起的进程在带 UI 限制的 job 里,
+                    以最高权限直接跑主程序会让托盘图标注册失败, 且子进程继承该限制。
+                    普通权限跑启动器, 再由它 ShellExecuteEx("runas") 经 AppInfo 提权,
+                    新进程才不受影响。
+                  -->
+                  <RunLevel>LeastPrivilege</RunLevel>
                 </Principal>
               </Principals>
               <Settings>
@@ -298,24 +361,35 @@ public sealed class AutoStartManager
     }
 
     /// <summary>
-    /// 判断计划任务里的命令是否就是本程序。
-    /// 只比较文件名与路径, 容忍引号和大小写差异; 任务里带了 --tray 参数也算。
+    /// 判断计划任务里的命令是否属于本程序。
+    ///
+    /// 注意比对的是启动器 (WujieFanLauncher.exe) 而不是 WujieFan.exe:
+    /// 0.2.0 起任务执行的是启动器, 由它再提权拉起主程序。
+    /// 若这里仍只认 WujieFan.exe, 我们自己建的任务会被判成"别人的任务",
+    /// 于是关不掉、也升级不了。
+    ///
+    /// 为兼容 0.1.x 遗留任务 (直接指向 WujieFan.exe), 两种都算"我们的"。
     /// </summary>
     private bool IsOurCommand(string command)
     {
         string exe = ExtractExecutable(command);
         if (exe.Length == 0) return false;
 
+        return SamePath(exe, LauncherPath) || SamePath(exe, _exePath);
+    }
+
+    private static bool SamePath(string a, string b)
+    {
+        if (a.Length == 0 || b.Length == 0) return false;
+
         try
         {
-            return string.Equals(
-                Path.GetFullPath(exe),
-                Path.GetFullPath(_exePath),
+            return string.Equals(Path.GetFullPath(a), Path.GetFullPath(b),
                 StringComparison.OrdinalIgnoreCase);
         }
         catch
         {
-            return string.Equals(exe, _exePath, StringComparison.OrdinalIgnoreCase);
+            return string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
         }
     }
 

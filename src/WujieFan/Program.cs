@@ -1,3 +1,4 @@
+using System.Text;
 using WujieFan.Ui;
 
 namespace WujieFan;
@@ -9,6 +10,31 @@ internal static class Program
 
     /// <summary>唤醒事件名。二次启动的进程 Set 一下就走, 主实例的后台线程负责把窗口拽回前台。</summary>
     private const string ShowWindowEventName = @"Global\WujieFan_ShowWindow";
+
+    /// <summary>
+    /// 把一条消息追加到 %LOCALAPPDATA%\WujieFan\ui.log。
+    ///
+    /// 只记异常, 不记常规运行轨迹: 用户遇到"程序突然没了"时, 这是唯一能查到原因的地方,
+    /// 而平时的读写日志只会白白占空间。写日志失败一律忽略 —— 日志不能影响主流程。
+    /// </summary>
+    internal static void UiLog(string message)
+    {
+        try
+        {
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WujieFan");
+            Directory.CreateDirectory(dir);
+
+            string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff")
+                          + " [" + Environment.ProcessId + "] " + message + Environment.NewLine;
+
+            File.AppendAllText(Path.Combine(dir, "ui.log"), line, new UTF8Encoding(false));
+        }
+        catch
+        {
+            // 记日志本身出错不能连累主流程。
+        }
+    }
 
     [STAThread]
     private static void Main(string[] args)
@@ -42,6 +68,9 @@ internal static class Program
         }
 
         ApplicationConfiguration.Initialize();
+
+        Application.ThreadException += (_, e) => UiLog("THREAD EXCEPTION: " + e.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => UiLog("UNHANDLED (" + e.IsTerminating + "): " + e.ExceptionObject);
 
         bool minimize = args.Any(a => a.Equals("--tray", StringComparison.OrdinalIgnoreCase));
         var form = new MainForm(minimize);

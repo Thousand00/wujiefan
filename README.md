@@ -12,6 +12,7 @@ MECHREVO 无界14+（ARN39P-TF / Ryzen 7 7840HS / ITE EC 2.12 / BIOS 2.31）的�
 |---|---|
 | 从 EC 读风扇转速 | 完成，实测抖动 <1% |
 | 托盘界面 / 开机自启 | 完成，自启动真实往返测试通过 |
+| 开机自启后托盘图标正常显示 | 完成，见下方「为什么有两个 exe」 |
 | 托盘驻留 + 单实例唤回 | 完成，点 × 收进托盘，再次启动唤回原窗口 |
 | 进入 RTSS，且**可拖动编辑** | 完成，端到端实测通过 |
 | 一键注入图层（幂等 + 可回滚） | 完成 |
@@ -38,10 +39,11 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 
 | 包 | 大小 | 前提 |
 |---|---|---|
-| `WujieFan-0.1.0-win-x64.zip` | 146 KB | 需 .NET 8 桌面运行时 |
-| `WujieFan-0.1.0-win-x64-portable.zip` | 62.6 MB | 免运行时，解压即用 |
+| `WujieFan-0.2.0-win-x64.zip` | 约 1 MB | 需 .NET 8 桌面运行时 |
+| `WujieFan-0.2.0-win-x64-portable.zip` | 约 130 MB | 免运行时，解压即用 |
 
-自己打包：`powershell -File tools\make-release.ps1 -Version 0.1.0`，产物在 `dist\`。
+自己打包：`powershell -File tools\make-release.ps1 -Version 0.2.0`，产物在 `dist\`。
+
 ## 快速开始
 
 ### 1. 运行主程序
@@ -49,7 +51,27 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
     dist\app\WujieFan.exe
 
 会弹 UAC —— 这是必须的，PawnIO 驱动只对 SYSTEM 与 Administrators 开放。
-勾选「开机自动启动」后，下次登录会以管理员身份自动运行并缩到托盘。
+
+勾选「开机自动启动」后，下次登录时会出现一次 UAC 确认（点「是」即可），随后程序以管理员身份
+拉起并缩到托盘。这一次点击无法省略：既要管理员权限、又要托盘图标，就必须经过 AppInfo 提权。
+
+### 为什么有两个 exe
+
+发布目录里除了 `WujieFan.exe` 还有 `WujieFanLauncher.exe`，两者必须放在一起。
+
+原因是任务计划程序拉起的进程会被放进一个带 UI 限制的 job 对象里，其中的
+`Shell_NotifyIcon(NIM_ADD)` 直接返回 `ERROR_ACCESS_DENIED(5)` —— 托盘图标永远不出现，
+而且这个限制会被所有子进程继承，跟任务本身是「最高权限」还是「普通权限」无关。
+
+所以自启动链拆成两跳：
+
+    计划任务（普通权限）→ WujieFanLauncher.exe（普通权限，asInvoker）
+      → ShellExecuteEx("runas") → 经 AppInfo 真正提权 → WujieFan.exe（管理员）
+
+只有 AppInfo 新建的进程才不会继承那个受限 job。反过来，让一个**已经提权**的进程再调 `runas`
+是不行的：UAC 判定同级，退化成普通 `CreateProcess`，子进程照样留在受限 job 里。
+
+启动器只做一次进程创建，不读 EC、不碰任何硬件寄存器。缺了它，勾选开机自启动时会直接报错提示。
 
 ### 2. 让图层出现在 RTSS 里
 
@@ -91,8 +113,10 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 
     assets\                程序图标源文件
     src\WujieFan\          主程序（WinForms .NET 8 x64）
+    src\WujieFan.Launcher\ 开机自启动的提权中转（asInvoker，只做一次 ShellExecuteEx）
     src\WujieFan.Core\     核心库：读 EC / 机型校验 / AIDA 供数 / 设置 / 自启
     tests\EcReadSmoke\     命令行验证工具（含自启动往返测试）
+    tests\FanControlLab\  风扇转速控制实验台（**不是产品**，见下方「风扇控制」）
     tools\                 注入脚本、诊断脚本、RTSS 重启脚本
     docs\                  技术文档（先读 01-现状与技术总结.md）
     docs\archive\          失败实验的原始资料
@@ -110,7 +134,9 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 - **只支持这一款机型 + EC 2.12**。寄存器地址是从这个固件逆向出来的，机型或固件版本不符时
   读出来的数字看着合理但完全错误 —— 所以程序会直接拒绝，而不是「尽力而为」。
   确有需要可用 `ForceUnsupported` 强开，后果自负。
-- **本程序只读 EC，不写 EC**。不碰风扇曲线、不碰 PWM。本程序不发出任何 EC 写操作。
+- **本程序（WujieFan）只读 EC，不写 EC**。不碰风扇曲线、不碰 PWM，运行期不发出任何 EC 写操作。
+  `tests\FanControlLab` 是**独立的实验程序**，会写 EC（因此必须显式 `--apply` 并带看门狗），
+  它不会被主程序调用，也不随发布包分发。
 - **PawnIO 的 LpcIO.bin 模块是 LGPL 2.1**。本程序把它作为嵌入资源分发，因此同样适用 LGPL 2.1：
   你可以替换它。源码与许可见 <https://github.com/namazso/PawnIO>。
 - RTSS 需要 7.3.x，且 `Plugins/Client/Overlays` 里的布局文件请自行备份。
@@ -126,8 +152,12 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 - [现状与技术总结](docs/01-现状与技术总结.md) —— 硬件/固件事实、EC 寄存器表、RTSS 各数据通道调研、
   程序结构、踩坑速查。要改这个项目或复现这套做法，先读它。
 
-运行时不进仓库：`dist/`、`bin/`、`obj/` 均在 `.gitignore` 里，需要时用
-`dotnet publish src\WujieFan\WujieFan.csproj -c Release -o dist\app` 自行构建（先退出正在运行的实例）。
+运行时不进仓库：`dist/`、`bin/`、`obj/` 均在 `.gitignore` 里。自行构建（先退出正在运行的实例）：
+
+    dotnet publish src\WujieFan\WujieFan.csproj -c Release -o dist\app
+    dotnet publish src\WujieFan.Launcher\WujieFan.Launcher.csproj -c Release -o dist\app
+
+两个 exe 必须发布到同一个目录，否则自启动会报「缺少启动器文件」。
 
 `backup/` 存的是改动前的 RTSS 原始配置（布局与 profile），出问题时用于还原，同样不入库，
 说明见 `backup/README.md`。

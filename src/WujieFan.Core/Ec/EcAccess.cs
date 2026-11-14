@@ -87,6 +87,20 @@ public sealed class EcAccess : IDisposable
 
     // ---------------------------------------------------------------- 对外
 
+    /// <summary>
+    /// 写 EC 地址空间的一个字节。
+    ///
+    /// 这是**危险操作**: 写错地址可能改变风扇/电源/充电行为, 甚至让机器过热。
+    /// 生产程序 (WujieFan) 不调用本方法; 只有经过显式确认的实验工具才会用到。
+    /// 调用方必须保证: 写完能恢复原值, 且有独立的温控看门狗兜底。
+    /// </summary>
+    public void Write(ushort address, byte value)
+    {
+        Select(0x10); Commit((byte)(address & 0xFF));
+        Select(0x11); Commit((byte)(address >> 8));
+        Select(0x12); Commit(value);
+    }
+
     /// <summary>读 EC 地址空间的一个字节。</summary>
     public int Read(ushort address)
     {

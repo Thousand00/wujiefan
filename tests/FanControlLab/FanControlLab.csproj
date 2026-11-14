@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <!-- dotnet build 对同时存在 Platforms 与 PlatformTarget 的项目会输出到 bin\Release,
+         并在 bin\x64\Release 留下陈旧副本 —— 改代码后跑到旧 exe 就是这么来的。 -->
+    <PlatformTarget>x64</PlatformTarget>
+    <Platforms>x64</Platforms>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>FanControlLab</RootNamespace>
+    <AssemblyName>FanControlLab</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\WujieFan.Core\WujieFan.Core.csproj" />
+  </ItemGroup>
+
+</Project>

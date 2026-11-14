@@ -23,6 +23,8 @@ namespace EcReadSmoke;
 ///   EcReadSmoke.exe --autostart-live     真实创建/查询/删除计划任务 WujieFan (需管理员, 会还原)
 ///   EcReadSmoke.exe --autostart-cn       中文 exe 路径的自启动回归 (需管理员)
 ///   EcReadSmoke.exe --autostart-upgrade  旧版任务定义被重写修正的回归 (需管理员)
+///   EcReadSmoke.exe --autostart-on       真正开启开机自启 (需管理员, 会留在系统里)
+///   EcReadSmoke.exe --autostart-off      真正关闭开机自启 (需管理员)
 /// </summary>
 internal static class Program
 {
@@ -35,6 +37,7 @@ internal static class Program
 
         int seconds = 5;
         bool json = false, aida = false, xmlOnly = false, peek = false, checkHw = false, autoStartTest = false, autoStartLive = false, autoStartCn = false, autoStartUpgrade = false;
+        string? autoStartOn = null;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -49,6 +52,12 @@ internal static class Program
                 case "--autostart-live": autoStartLive = true; break;
                 case "--autostart-cn": autoStartCn = true; break;
                 case "--autostart-upgrade": autoStartUpgrade = true; break;
+                case "--autostart-on":
+                    autoStartOn = i + 1 < args.Length ? args[++i] : @"E:\WORKS\RTSS-0\dist\app\WujieFan.exe";
+                    break;
+                case "--autostart-off":
+                    autoStartOn = "";
+                    break;
                 case "--seconds" when i + 1 < args.Length:
                     if (int.TryParse(args[++i], out int s)) seconds = s;
                     break;
@@ -65,6 +74,7 @@ internal static class Program
         if (autoStartLive) return RunAutoStartLive();
         if (autoStartCn) return RunAutoStartChinese();
         if (autoStartUpgrade) return RunAutoStartUpgrade();
+        if (autoStartOn is not null) return RunAutoStartSet(autoStartOn);
 
         if (checkHw) return RunCheckHw();
 
@@ -259,12 +269,22 @@ internal static class Program
 
         // 这几项是本轮重写任务 XML 的目的所在, 一并断言, 免得以后又退回模板默认值:
         //   笔记本不接电源也要启动、不能被执行时限中途杀掉。
+        //
+        // 另外两条是 0.2.0 加的, 关系到托盘图标能不能出现:
+        //   任务必须以 LeastPrivilege 运行启动器, 而不是以最高权限直接跑主程序。
+        //   以最高权限跑主程序时, 任务计划那个受限 job 会让 NIM_ADD 返回拒绝访问,
+        //   托盘图标永远不出现, 而且子进程会继承该限制。
         bool batteryStart = HasXmlValue(cmd, "DisallowStartIfOnBatteries", "false");
         bool batteryStop = HasXmlValue(cmd, "StopIfGoingOnBatteries", "false");
         bool unlimited = HasXmlValue(cmd, "ExecutionTimeLimit", "PT0S");
+        bool leastPrivilege = HasXmlValueOrAbsent(cmd, "RunLevel", "LeastPrivilege");
+        bool runsLauncher = cmd.IndexOf("WujieFanLauncher.exe", StringComparison.OrdinalIgnoreCase) >= 0;
+
         Console.WriteLine($"   DisallowStartIfOnBatteries=false : {(batteryStart ? "OK" : "FAIL 拔电源就不启动")}");
         Console.WriteLine($"   StopIfGoingOnBatteries=false     : {(batteryStop ? "OK" : "FAIL 拔电源就被停")}");
         Console.WriteLine($"   ExecutionTimeLimit=PT0S (无限)   : {(unlimited ? "OK" : "FAIL 会被定时杀掉")}");
+        Console.WriteLine($"   RunLevel=LeastPrivilege          : {(leastPrivilege ? "OK" : "FAIL 会以最高权限直启, 托盘图标出不来")}");
+        Console.WriteLine($"   执行 WujieFanLauncher.exe        : {(runsLauncher ? "OK" : "FAIL 任务没指向启动器")}");
 
         var dis = mgr.Disable();
         Console.WriteLine($"4. Disable -> ok={dis.Ok} msg={dis.Message}");
@@ -272,7 +292,8 @@ internal static class Program
         bool afterDisable = mgr.IsEnabled();
         Console.WriteLine($"5. 关闭后 IsEnabled = {afterDisable}  {(afterDisable ? "FAIL" : "OK")}");
 
-        bool pass = afterEnable && !afterDisable && batteryStart && batteryStop && unlimited;
+        bool pass = afterEnable && !afterDisable && batteryStart && batteryStop && unlimited
+                    && leastPrivilege && runsLauncher;
         Console.WriteLine();
         Console.WriteLine(pass ? "结果: 通过" : "结果: 失败");
         return pass ? 0 : 1;
@@ -291,14 +312,30 @@ internal static class Program
     {
         const string TaskName = "WujieFanCnTest";
 
-        // 这个路径不需要真实存在: 自启动管理只做字符串比对, 不会去启动它。
+        // 自启动管理只做字符串比对, 不会去启动 exe; 但 0.2.0 起 Enable() 会先校验
+        // 启动器和主程序同目录, 所以这两个文件必须真的存在。用完在 finally 里清掉。
         string cnDir = "E:" + System.IO.Path.DirectorySeparatorChar + "\u6D4B\u8BD5";
         string exe = System.IO.Path.Combine(cnDir, "WujieFan.exe");
+        string launcher = System.IO.Path.Combine(cnDir, AutoStartManager.LauncherFileName);
 
         var mgr = new AutoStartManager(exe, TaskName);
 
         Console.WriteLine("=== 中文路径自启动测试 ===");
         Console.WriteLine($"目标 exe = {exe}");
+
+        bool createdDir = false;
+        try
+        {
+            createdDir = !System.IO.Directory.Exists(cnDir);
+            System.IO.Directory.CreateDirectory(cnDir);
+            System.IO.File.WriteAllBytes(exe, Array.Empty<byte>());
+            System.IO.File.WriteAllBytes(launcher, Array.Empty<byte>());
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("无法准备中文目录: " + ex.Message);
+            return 1;
+        }
 
         var existing = new AutoStartManager(exe, TaskName);
         existing.Disable();
@@ -318,8 +355,9 @@ internal static class Program
 
             string cmd = ReadTaskCommand(TaskName);
             Console.WriteLine($"3. 任务里的 Command = {Show(cmd)}");
-            bool same = string.Equals(cmd, exe, StringComparison.OrdinalIgnoreCase);
-            Console.WriteLine($"4. 与目标路径一致 = {same}  {(same ? "OK" : "FAIL 编码被破坏")}");
+            // 0.2.0 起任务指向启动器而不是主程序 (任务本身跑普通权限, 由启动器经 UAC 提权)。
+            bool same = string.Equals(cmd, launcher, StringComparison.OrdinalIgnoreCase);
+            Console.WriteLine($"4. 与启动器路径一致 = {same}  {(same ? "OK" : "FAIL 编码被破坏")}");
 
             var dis = mgr.Disable();
             bool afterDisable = mgr.IsEnabled();
@@ -334,6 +372,17 @@ internal static class Program
         {
             // 无论成败都不要把这个测试任务留在系统里。
             try { mgr.Disable(); } catch { }
+            try
+            {
+                if (System.IO.File.Exists(exe)) System.IO.File.Delete(exe);
+                if (System.IO.File.Exists(launcher)) System.IO.File.Delete(launcher);
+                if (createdDir && System.IO.Directory.Exists(cnDir)
+                    && System.IO.Directory.GetFileSystemEntries(cnDir).Length == 0)
+                {
+                    System.IO.Directory.Delete(cnDir);
+                }
+            }
+            catch { }
         }
     }
 
@@ -421,10 +470,18 @@ internal static class Program
             Console.WriteLine($"   ExecutionTimeLimit=PT0S (无限)         : {(newUnlimited ? "OK" : "FAIL 升级后仍会被强制结束")}");
             Console.WriteLine($"   提示文字 = {oneLine}");
 
+            // 托盘图标那一条: 旧定义是 HighestAvailable + 直指 WujieFan.exe, 必须被改成
+            // LeastPrivilege + 启动器, 否则升级上来的用户会一直"没有托盘图标"。
+            bool newLeastPrivilege = HasXmlValueOrAbsent(newXml, "RunLevel", "LeastPrivilege");
+            bool newRunsLauncher = newXml.IndexOf("WujieFanLauncher.exe", StringComparison.OrdinalIgnoreCase) >= 0;
+            Console.WriteLine($"   RunLevel=LeastPrivilege                 : {(newLeastPrivilege ? "OK" : "FAIL 升级后仍以最高权限直启")}");
+            Console.WriteLine($"   执行 WujieFanLauncher.exe              : {(newRunsLauncher ? "OK" : "FAIL 升级后仍直指主程序")}");
+
             bool nowCurrent = mgr.IsUpToDate();
             Console.WriteLine($"5. 重写后 IsUpToDate = {nowCurrent}  {(nowCurrent ? "OK 以后启动不再重复重写" : "FAIL 每次启动都会再跑一遍 schtasks")}");
 
-            bool pass = enabled && oldStale && newBatteryStart && newBatteryStop && newUnlimited && nowCurrent;
+            bool pass = enabled && oldStale && newBatteryStart && newBatteryStop && newUnlimited
+                        && newLeastPrivilege && newRunsLauncher && nowCurrent;
             Console.WriteLine();
             Console.WriteLine(pass ? "结果: 通过" : "结果: 失败");
             return pass ? 0 : 1;
@@ -577,6 +634,58 @@ internal static class Program
         if (j < 0) return false;
         string v = xml.Substring(i + open.Length, j - i - open.Length).Trim();
         return string.Equals(v, expected, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 节点值等于该设置在 XML schema 里的默认值时, /Query /XML 会把整个节点省掉
+    /// (实测: LeastPrivilege 与 PT72H 都不输出节点)。所以"节点缺失"同样算通过。
+    /// </summary>
+    private static bool HasXmlValueOrAbsent(string xml, string tag, string expected)
+    {
+        string open = "<" + tag + ">";
+        int i = xml.IndexOf(open, StringComparison.Ordinal);
+        if (i < 0) return true;   // 省略 = 默认值
+        return HasXmlValue(xml, tag, expected);
+    }
+
+    /// <summary>直接把真实的自启动任务开/关掉 (exePath 为空表示关闭), 关掉时不动其它设置。</summary>
+    private static int RunAutoStartSet(string exePath)
+    {
+        bool enable = exePath.Length > 0;
+        string exe = enable ? exePath : @"E:\WORKS\RTSS-0\dist\app\WujieFan.exe";
+
+        var mgr = new AutoStartManager(exe);
+
+        Console.WriteLine(enable ? "=== 开启开机自启 ===" : "=== 关闭开机自启 ===");
+        Console.WriteLine($"目标 exe = {exe}");
+
+        if (enable)
+        {
+            var en = mgr.Enable();
+            Console.WriteLine($"1. Enable -> ok={en.Ok}");
+            if (!en.Ok)
+            {
+                Console.WriteLine("   " + en.Message.Replace("\n", "\n   "));
+                return 1;
+            }
+            Console.WriteLine($"   提示文字 = {en.Message.Replace("\n", " / ")}");
+
+            bool on = mgr.IsEnabled();
+            bool up = mgr.IsUpToDate();
+            Console.WriteLine($"2. IsEnabled   = {on}  {(on ? "OK" : "FAIL")}");
+            Console.WriteLine($"3. IsUpToDate  = {up}  {(up ? "OK" : "FAIL")}");
+
+            string cmd = ReadTaskCommand(AutoStartManager.TaskName);
+            Console.WriteLine($"4. 任务 Command = {Show(cmd)}");
+
+            return on && up ? 0 : 1;
+        }
+
+        var dis = mgr.Disable();
+        bool after = mgr.IsEnabled();
+        Console.WriteLine($"1. Disable -> ok={dis.Ok}");
+        Console.WriteLine($"2. 之后 IsEnabled = {after}  {(after ? "FAIL" : "OK")}");
+        return after ? 1 : 0;
     }
 
     private static string Show(string s) =>
