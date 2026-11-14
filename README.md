@@ -79,14 +79,15 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 
 ## 目录
 
+    assets\                程序图标源文件
     src\WujieFan\          主程序（WinForms .NET 8 x64）
     src\WujieFan.Core\     核心库：读 EC / 机型校验 / AIDA 供数 / 设置 / 自启
     tests\EcReadSmoke\     命令行验证工具（含自启动往返测试）
     tools\                 注入脚本、诊断脚本、RTSS 重启脚本
     docs\                  技术文档（先读 01-现状与技术总结.md）
     docs\archive\          失败实验的原始资料
-    dist\app\              发布产物
-    build\                 临时构建输出，不入库
+    dist\app\              发布产物（不入库，可重建）
+    backup\                改动前的 RTSS 原始配置，用于还原（不入库）
 
 ## 技术文档
 
