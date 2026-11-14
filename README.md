@@ -115,8 +115,11 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 - [现状与技术总结](docs/01-现状与技术总结.md) —— 硬件/固件事实、EC 寄存器表、RTSS 各数据通道调研、
   程序结构、踩坑速查。要改这个项目或复现这套做法，先读它。
 
-运行时不进仓库：`dist/`、`build/`、`bin/`、`obj/` 均在 `.gitignore` 里，需要时用
+运行时不进仓库：`dist/`、`bin/`、`obj/` 均在 `.gitignore` 里，需要时用
 `dotnet publish src\WujieFan\WujieFan.csproj -c Release -o dist\app` 自行构建（先退出正在运行的实例）。
+
+`backup/` 存的是改动前的 RTSS 原始配置（布局与 profile），出问题时用于还原，同样不入库，
+说明见 `backup/README.md`。
 
 ## 许可
 

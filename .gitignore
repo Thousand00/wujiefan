@@ -2,13 +2,12 @@
 bin/
 obj/
 dist/
-build/
-*.user
-*.suo
-.vs/
 
-# 工具自身状态（含本机标识，绝不入库）
+# 本机状态（含设备标识，绝不入库）
 .local/
+
+# 本机配置备份（原始 RTSS 文件，供还原）
+backup/
 
 # 一次性勘察脚本与临时产物
 _survey/
@@ -16,5 +15,8 @@ work/
 *.log
 !docs/archive/**/*.log
 
-# 备份
+# 编辑器与备份文件
+*.user
+*.suo
+.vs/
 *.bak-*
