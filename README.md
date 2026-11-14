@@ -12,6 +12,7 @@ MECHREVO 无界14+（ARN39P-TF / Ryzen 7 7840HS / ITE EC 2.12 / BIOS 2.31）的�
 |---|---|
 | 从 EC 读风扇转速 | 完成，实测抖动 <1% |
 | 托盘界面 / 开机自启 | 完成，自启动真实往返测试通过 |
+| 托盘驻留 + 单实例唤回 | 完成，点 × 收进托盘，再次启动唤回原窗口 |
 | 进入 RTSS，且**可拖动编辑** | 完成，端到端实测通过 |
 | 一键注入图层（幂等 + 可回滚） | 完成 |
 
@@ -22,6 +23,10 @@ MECHREVO 无界14+（ARN39P-TF / Ryzen 7 7840HS / ITE EC 2.12 / BIOS 2.31）的�
       → 命名共享内存 AIDA64_SensorValues
       → RTSS OverlayEditor 的 AIDA 数据源
       → %WUJIE Fan1 RPM% 宏 → 图层文字
+
+实际效果（右上角两段风扇转速就是注入的图层，可拖动、可改字体颜色）：
+
+![RTSS 叠加层里的两个风扇转速](docs/images/overlay-fans.png)
 
 之所以绕道 AIDA 共享内存，是因为 RTSS 只认识它自带的那几个数据提供方（HAL / AIDA / HwInfo /
 MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平台风扇**。AIDA 通道是唯一
@@ -53,13 +58,24 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 想撤销就用 `--revert`，想先看看会改什么就用 `--dry-run`。改之前会自动备份成
 `<文件名>.bak-wujie-<时间戳>`。
 
-### 3. 排查工具
+### 3. 关掉窗口不会退出
+
+点右上角 × 只是收进托盘 —— 读数与供数照常继续，首次会弹一个气泡提示。
+
+- 唤回窗口：双击托盘图标，或右键 →「显示主窗口」，或**再运行一次 exe**（不会开第二个进程，而是把已有窗口叫到前台）。
+- 真的退出：右键托盘图标 →「退出 WujieFan」。
+
+### 4. 排查工具
 
     python tools\read-aida.py -n 3          # WujieFan 到底写没写、写的数对不对
     python tools\peek-overlay.py --full     # RTSS 实际渲染出来的图层文本
     python tools\peek-overlay.py --slots    # 列出全部 8 个 OSD 槽的占用者
 
 顺序很重要：**先确认供数（read-aida），再看渲染（peek-overlay）**。
+
+如果数值都对、`peek-overlay` 里也有图层文本，但屏幕上就是看不见，那几乎一定是坐标跑出了渲染区。
+`.ovl` 的 `PositionX` 不是绝对像素，负值向右、数值过大会让图层静默消失（`-120` 就完全看不见，`-16` 正常）。
+详见 [docs/01-现状与技术总结.md](docs/01-现状与技术总结.md) §9A.10。
 
 ## 目录
 

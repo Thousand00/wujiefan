@@ -57,8 +57,15 @@ SOURCES = [
 # (layer name, layer text, position x, position y, text colour)
 LAYERS = [
     ("CPU Fan RPM", "Fan1 %WUJIE Fan1 RPM% RPM", 0, -4, "8052EB99"),
-    ("GPU Fan RPM", "Fan2 %WUJIE Fan2 RPM% RPM", -120, -4, "80B852EB"),
+    ("GPU Fan RPM", "Fan2 %WUJIE Fan2 RPM% RPM", -16, -4, "80B852EB"),
 ]
+
+# About PositionX: RTSS does not read <P=x,y> as an absolute offset from the
+# window origin. x is an advance along the current text flow, and a negative
+# value moves to the RIGHT. Empirically -120 pushed the second layer outside the
+# rendered area, so it never appeared at all; -16 keeps it on the same row, just
+# right of the first one. y is a row offset with the same sign convention: more
+# negative = further down. Keep both small and verify on screen after a restart.
 
 OUR_SOURCE_IDS = {sid for _, sid, _ in SOURCES}
 OUR_LAYER_NAMES = {name for name, *_ in LAYERS}

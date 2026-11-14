@@ -1,4 +1,6 @@
 using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
 using Microsoft.Win32;
 using System.Windows.Forms;
 using WujieFan.Core.Config;
@@ -33,6 +35,10 @@ public sealed class MainForm : Form
 
     private int _consecutiveErrors;
     private bool _trayHintShown;
+
+    private NotifyIcon? _trayIcon;
+    private bool _exiting;
+    private bool _hidingToTray;
 
     public MainForm(bool startMinimized)
     {
@@ -141,8 +147,67 @@ public sealed class MainForm : Form
         });
     }
 
+    private void CreateTrayIcon()
+    {
+        _trayIcon = new NotifyIcon
+        {
+            Icon = LoadAppIcon(32),
+            Text = "WujieFan - 无界14+ 风扇转速",
+            Visible = true,
+            ContextMenuStrip = BuildTrayMenu(),
+        };
+
+        _trayIcon.DoubleClick += (_, _) => RestoreFromTray();
+    }
+
+    private ContextMenuStrip BuildTrayMenu()
+    {
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("显示主窗口", null, (_, _) => RestoreFromTray());
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("退出 WujieFan", null, (_, _) => ExitApplication());
+        return menu;
+    }
+
+    /// <summary>从嵌入资源取出多尺寸 .ico, 按需要的尺寸建图标 (托盘与任务栏尺寸不同)。</summary>
+    private static Icon LoadAppIcon(int size)
+    {
+        var asm = typeof(MainForm).Assembly;
+        foreach (string name in asm.GetManifestResourceNames())
+        {
+            if (!name.EndsWith("wujiefan.ico", StringComparison.OrdinalIgnoreCase)) continue;
+
+            using Stream s = asm.GetManifestResourceStream(name)!;
+            using var buffer = new MemoryStream();
+            s.CopyTo(buffer);
+            buffer.Position = 0;
+            return new Icon(buffer, size, size);
+        }
+
+        // 兜底: 没有嵌入资源就用 exe 自己的图标。
+        return Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application;
+    }
+
+    /// <summary>把隐藏的窗口叫回来 (托盘双击、托盘菜单、以及第二次启动的唤醒事件都走这里)。</summary>
+    public void RestoreFromTray()
+    {
+        ShowInTaskbar = true;
+        if (!Visible) Show();
+        WindowState = FormWindowState.Normal;
+        Activate();
+        BringToFront();
+    }
+
+    private void ExitApplication()
+    {
+        _exiting = true;
+        Close();
+    }
+
     private void OnFormLoad(object? sender, EventArgs e)
     {
+        CreateTrayIcon();
+
         _autoStart = new AutoStartManager();
 
         if (_autoStart.HasForeignTask())
@@ -329,27 +394,50 @@ public sealed class MainForm : Form
 
     private void OnFormClosing(object? sender, FormClosingEventArgs e)
     {
-        if (_settings.MinimizeToTray && e.CloseReason == CloseReason.UserClosing && !_trayHintShown)
-        {
-            _trayHintShown = true;
-            e.Cancel = true;
-            HideToTray();
-        }
+
+        // 点右上角关闭 = 收进托盘继续在后台供数; 只有托盘菜单的"退出"才真的结束进程。
+        if (_exiting || e.CloseReason != CloseReason.UserClosing) return;
+
+        e.Cancel = true;
+
+        // 关键: 不能在 FormClosing 里直接改 ShowInTaskbar —— 那会重建窗口句柄,
+        // 让这次的"取消关闭"失效, 进程会被真的关掉。必须等关闭流程走完再隐藏。
+        BeginInvoke(new Action(HideToTray));
     }
 
     private void HideToTray()
     {
-        _settings.MinimizeToTray = true;
-        _settings.Save();
-        Hide();
-        WindowState = FormWindowState.Minimized;
-        ShowInTaskbar = false;
+
+        // WindowState 变化会再次触发 Resize, 用标志位挡住重入。
+        if (_hidingToTray) return;
+        _hidingToTray = true;
+
+        try
+        {
+            // 先隐藏再改 ShowInTaskbar: 句柄重建发生在不可见状态下, 不会闪一下。
+            WindowState = FormWindowState.Minimized;
+            Hide();
+            ShowInTaskbar = false;
+
+            if (!_trayHintShown && _trayIcon is not null)
+            {
+                _trayHintShown = true;
+                _trayIcon.BalloonTipTitle = "WujieFan 仍在后台运行";
+                _trayIcon.BalloonTipText = "风扇转速照常读数并送往 RTSS。双击托盘图标可以重新打开窗口, 右键可以退出。";
+                _trayIcon.BalloonTipIcon = ToolTipIcon.Info;
+                _trayIcon.ShowBalloonTip(4000);
+            }
+        }
+        finally
+        {
+            _hidingToTray = false;
+        }
     }
 
     private void OnFormResize(object? sender, EventArgs e)
     {
-        if (WindowState == FormWindowState.Minimized && _settings.MinimizeToTray)
-            HideToTray();
+        if (WindowState == FormWindowState.Minimized && _settings.MinimizeToTray && !_exiting)
+            BeginInvoke(new Action(HideToTray));
     }
 
     private void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
@@ -380,6 +468,14 @@ public sealed class MainForm : Form
             CloseReader();
             _aida?.Dispose();
             _aida = null;
+
+            if (_trayIcon is not null)
+            {
+                _trayIcon.Visible = false;
+                _trayIcon.ContextMenuStrip?.Dispose();
+                _trayIcon.Dispose();
+                _trayIcon = null;
+            }
         }
         base.Dispose(disposing);
     }
