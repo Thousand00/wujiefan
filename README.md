@@ -43,8 +43,8 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 
 | 包 | 大小 | 前提 |
 |---|---|---|
-| `WujieFan-0.3.0-win-x64.zip` | 约 1 MB | 需 .NET 8 桌面运行时 |
-| `WujieFan-0.3.0-win-x64-portable.zip` | 约 130 MB | 免运行时，解压即用 |
+| `WujieFan-0.3.0-win-x64.zip` | 228 KB | 需 .NET 8 桌面运行时 |
+| `WujieFan-0.3.0-win-x64-portable.zip` | 91 MB | 免运行时，解压即用 |
 
 自己打包：`powershell -File tools\make-release.ps1 -Version 0.3.0`（需提权，产物在 `dist\`）。
 
