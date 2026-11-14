@@ -32,6 +32,16 @@ MECHREVO 无界14+（ARN39P-TF / Ryzen 7 7840HS / ITE EC 2.12 / BIOS 2.31）的�
 MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平台风扇**。AIDA 通道是唯一
 「不需要改 RTSS 本身、也不需要往 RTSS 进程里塞插件」的入口。
 
+## 下载
+
+不想自己编译就直接拿打包好的版本：[Releases](https://github.com/Thousand00/wujiefan/releases/latest)。
+
+| 包 | 大小 | 前提 |
+|---|---|---|
+| `WujieFan-0.1.0-win-x64.zip` | 146 KB | 需 .NET 8 桌面运行时 |
+| `WujieFan-0.1.0-win-x64-portable.zip` | 62.6 MB | 免运行时，解压即用 |
+
+自己打包：`powershell -File tools\make-release.ps1 -Version 0.1.0`，产物在 `dist\`。
 ## 快速开始
 
 ### 1. 运行主程序
