@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
 using Microsoft.Win32;
 using System.Windows.Forms;
 using WujieFan.Core.Config;
@@ -10,22 +11,35 @@ using WujieFan.Core.Providers;
 namespace WujieFan.Ui;
 
 /// <summary>
-/// 主窗口: 显示两个风扇转速与 CPU 温度, 提供开机自启动与 RTSS 供数开关。
+/// 主窗口: 显示两个风扇转速与 CPU 温度, 提供开机自启动、RTSS 供数与强冷开关。
 ///
-/// 刻意做得朴素: 这个程序的价值是把正确的数字送到 RTSS,
-/// 界面只要让人一眼看清状态、能开关自启动就够了。
+/// 界面按 UI/WujieFan-UI-设计稿.html 实现 (2026-11-15): 深色圆角卡片、
+/// 自绘标题栏、三列数据卡、整行可点的开关、语义色状态栏。
+/// 所有布局坐标都是设计稿的 96dpi CSS px, 经 Dpi.Px 换算到实际设备像素。
 /// </summary>
 public sealed class MainForm : Form
 {
+    private const int DesignWidth = 432;
+    private const int DesignTitleHeight = 50;
+    private const int DesignCardHeight = 84;
+    private const int DesignRowHeight = 44;
+
     private readonly bool _startMinimized;
 
-    private readonly Label _fan1Value = new();
-    private readonly Label _fan2Value = new();
-    private readonly Label _tempValue = new();
-    private readonly Label _statusLabel = new();
-    private readonly Label _fanModeState = new();
-    private readonly CheckBox _autoStartCheck = new();
-    private readonly CheckBox _strongCoolCheck = new();
+    private readonly DataCard _fan1Card = new();
+    private readonly DataCard _fan2Card = new();
+    private readonly DataCard _tempCard = new();
+    private readonly StatusBar _statusBar = new();
+    private readonly ToggleRow _autoStartRow = new();
+    private readonly ToggleRow _rtssRow = new();
+    private readonly ToggleRow _strongCoolRow = new();
+    private readonly Label _machineLabel = new();
+    private readonly Label _footnoteLabel = new();
+
+    private Rectangle _minRect;
+    private Rectangle _closeRect;
+    private bool _hoverMin;
+    private bool _hoverClose;
 
     private readonly System.Windows.Forms.Timer _timer = new();
 
@@ -87,117 +101,350 @@ public sealed class MainForm : Form
         SystemEvents.SessionEnding += OnSessionEnding;
     }
 
+    // ---------------------------------------------------------------- 界面构建
+
     private void BuildUi()
     {
         Text = "WujieFan - 无界14+ 风扇转速";
         StartPosition = FormStartPosition.CenterScreen;
-        FormBorderStyle = FormBorderStyle.FixedSingle;
+        FormBorderStyle = FormBorderStyle.None;
         MaximizeBox = false;
-        ClientSize = new Size(420, 340);
-        Font = new Font("Microsoft YaHei UI", 9F);
+        MinimizeBox = false;
+        ShowIcon = false;
+        BackColor = Theme.WinBg;
+        DoubleBuffered = true;
+        KeyPreview = true;
+        Font = Theme.RowLabel;
 
-        var title = new Label
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint
+               | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+
+        _machineLabel.AutoSize = false;
+        _machineLabel.BackColor = Theme.WinBg;
+        _machineLabel.ForeColor = Theme.Text2;
+        _machineLabel.Font = Theme.Machine;
+        _machineLabel.Text = "机器信息读取中...";
+
+        _fan1Card.Label = "Fan1 (CPU)";
+        _fan1Card.Unit = "RPM";
+        _fan1Card.Value = "--";
+        _fan1Card.DotColor = Theme.Text3;
+
+        _fan2Card.Label = "Fan2 (GPU)";
+        _fan2Card.Unit = "RPM";
+        _fan2Card.Value = "--";
+        _fan2Card.DotColor = Theme.Text3;
+
+        _tempCard.Label = "CPU";
+        _tempCard.Unit = "°C";
+        _tempCard.Value = "--";
+        _tempCard.BigValue = false;
+
+        _autoStartRow.Text = "开机自动启动";
+        _autoStartRow.Hint = "(需要管理员权限)";
+        _autoStartRow.CheckedChanged += OnAutoStartChanged;
+
+        _rtssRow.Text = "向 RTSS 提供数据";
+        _rtssRow.Hint = "(AIDA64 通道)";
+        _rtssRow.Checked = _settings.PublishToRtss;
+        _rtssRow.CheckedChanged += (_, _) =>
         {
-            Text = "风扇转速",
-            Font = new Font("Microsoft YaHei UI", 12F, FontStyle.Bold),
-            Location = new Point(20, 16),
-            AutoSize = true,
-        };
-
-        var model = new Label
-        {
-            Name = "modelLabel",
-            Text = "机器信息读取中...",
-            ForeColor = Color.Gray,
-            Location = new Point(20, 46),
-            Size = new Size(380, 32),
-        };
-
-        _fan1Value.Text = "--";
-        _fan1Value.Font = new Font("Consolas", 26F, FontStyle.Bold);
-        _fan1Value.Location = new Point(20, 86);
-        _fan1Value.AutoSize = true;
-
-        var fan1Caption = new Label
-        {
-            Text = "Fan1 (CPU)",
-            ForeColor = Color.Gray,
-            Location = new Point(20, 148),
-            AutoSize = true,
-        };
-
-        _fan2Value.Text = "--";
-        _fan2Value.Font = new Font("Consolas", 26F, FontStyle.Bold);
-        _fan2Value.Location = new Point(200, 86);
-        _fan2Value.AutoSize = true;
-
-        var fan2Caption = new Label
-        {
-            Text = "Fan2 (GPU)",
-            ForeColor = Color.Gray,
-            Location = new Point(200, 148),
-            AutoSize = true,
-        };
-
-        _tempValue.Text = "--";
-        _tempValue.Font = new Font("Consolas", 16F);
-        _tempValue.Location = new Point(330, 96);
-        _tempValue.AutoSize = true;
-
-        var tempCaption = new Label
-        {
-            Text = "CPU °C",
-            ForeColor = Color.Gray,
-            Location = new Point(330, 130),
-            AutoSize = true,
-        };
-
-        _autoStartCheck.Text = "开机自动启动 (需要管理员权限)";
-        _autoStartCheck.Location = new Point(20, 182);
-        _autoStartCheck.AutoSize = true;
-        _autoStartCheck.CheckedChanged += OnAutoStartChanged;
-
-        var rtssCheck = new CheckBox
-        {
-            Text = "向 RTSS 提供数据 (AIDA64 通道)",
-            Location = new Point(20, 208),
-            AutoSize = true,
-            Checked = _settings.PublishToRtss,
-        };
-        rtssCheck.CheckedChanged += (_, _) =>
-        {
-            _settings.PublishToRtss = rtssCheck.Checked;
+            _settings.PublishToRtss = _rtssRow.Checked;
             _settings.Save();
             ApplyPublishMode();
         };
 
-        _strongCoolCheck.Text = "强冷模式 (两个风扇满转)";
-        _strongCoolCheck.Location = new Point(20, 234);
-        _strongCoolCheck.AutoSize = true;
-        _strongCoolCheck.CheckedChanged += OnStrongCoolChanged;
+        _strongCoolRow.Text = "强冷模式";
+        _strongCoolRow.Hint = "(两个风扇满转)";
+        _strongCoolRow.CheckedChanged += OnStrongCoolChanged;
 
-        // 实际模式由 EC 寄存器回读得出, 与服务端设置分开显示:
-        // 用户勾了强冷却因为被别的程序改写而实际是自动时, 这里必须看得出来。
-        _fanModeState.Text = "";
-        _fanModeState.ForeColor = Color.Gray;
-        // 单独占右侧一列: 勾选框文字是 AutoSize 的, 让它自己排版会和勾选框重叠。
-        _fanModeState.Location = new Point(288, 236);
-        _fanModeState.Size = new Size(112, 20);
-        _fanModeState.TextAlign = ContentAlignment.MiddleRight;
-        _fanModeState.AutoSize = false;
+        _footnoteLabel.AutoSize = false;
+        _footnoteLabel.BackColor = Theme.WinBg;
+        _footnoteLabel.ForeColor = Theme.Text3;
+        _footnoteLabel.Font = Theme.Footnote;
+        _footnoteLabel.Text = "点 × 不收进程, 只收进托盘继续读数与供数; 双击托盘图标唤回窗口。";
 
-        _statusLabel.Text = "正在初始化...";
-        _statusLabel.ForeColor = Color.Gray;
-        _statusLabel.Location = new Point(20, 262);
-        _statusLabel.Size = new Size(380, 60);
+        _statusBar.SetStatus("正在初始化...", Theme.Text2, Color.Transparent);
 
         Controls.AddRange(new Control[]
         {
-            title, model, _fan1Value, fan1Caption, _fan2Value, fan2Caption,
-            _tempValue, tempCaption, _autoStartCheck, rtssCheck,
-            _strongCoolCheck, _fanModeState, _statusLabel,
+            _machineLabel, _fan1Card, _fan2Card, _tempCard,
+            _autoStartRow, _rtssRow, _strongCoolRow, _statusBar, _footnoteLabel,
         });
+
+        Relayout();
     }
+
+    /// <summary>
+    /// 按设计稿的纵向节奏排一遍。状态栏高度随文案变, 所以每次 SetStatus 之后都要重排。
+    /// </summary>
+    private void Relayout()
+    {
+        int w = Dpi.Px(this, DesignWidth);
+        int padX = Dpi.Px(this, 18);
+        int innerW = w - padX * 2;
+
+        int titleH = Dpi.Px(this, DesignTitleHeight);
+        int y = titleH + Dpi.Px(this, 10);
+
+        int machineH = Dpi.Px(this, 20);
+        _machineLabel.Bounds = new Rectangle(padX, y, innerW, machineH);
+        y += machineH + Dpi.Px(this, 6);
+
+        // 三列: 1fr 1fr .9fr, 间隙 10
+        int gap = Dpi.Px(this, 10);
+        int usable = innerW - gap * 2;
+        int c1 = (int)Math.Round(usable / 2.9);
+        int c2 = c1;
+        int c3 = usable - c1 - c2;
+        int cardH = Dpi.Px(this, DesignCardHeight);
+
+        _fan1Card.Bounds = new Rectangle(padX, y, c1, cardH);
+        _fan2Card.Bounds = new Rectangle(padX + c1 + gap, y, c2, cardH);
+        _tempCard.Bounds = new Rectangle(padX + c1 + c2 + gap * 2, y, c3, cardH);
+        y += cardH + Dpi.Px(this, 10);
+
+        int rowH = Dpi.Px(this, DesignRowHeight);
+        int rowW = innerW - Dpi.Px(this, 16);
+        int rowX = padX + Dpi.Px(this, 8);
+
+        _autoStartRow.Bounds = new Rectangle(rowX, y, rowW, rowH);
+        y += rowH;
+        _rtssRow.Bounds = new Rectangle(rowX, y, rowW, rowH);
+        y += rowH;
+        _strongCoolRow.Bounds = new Rectangle(rowX, y, rowW, rowH);
+        y += rowH + Dpi.Px(this, 8);
+
+        int statusH = _statusBar.MeasureHeight(innerW);
+        _statusBar.Bounds = new Rectangle(padX, y, innerW, statusH);
+        y += statusH + Dpi.Px(this, 10);
+
+        int footH = Dpi.Px(this, 32);
+        _footnoteLabel.Bounds = new Rectangle(padX, y, innerW, footH);
+        y += footH + Dpi.Px(this, 12);
+
+        if (ClientSize.Height != y || ClientSize.Width != w)
+            ClientSize = new Size(w, y);
+
+        // 标题栏右侧两个按钮
+        int btn = Dpi.Px(this, 30);
+        int btnTop = (titleH - btn) / 2;
+        _closeRect = new Rectangle(w - Dpi.Px(this, 13) - btn, btnTop, btn, btn);
+        _minRect = new Rectangle(_closeRect.Left - Dpi.Px(this, 6) - btn, btnTop, btn, btn);
+
+        UpdateRegion();
+    }
+
+    /// <summary>无边框窗口要自己把圆角裁出来, 否则四个角是直角深色块。</summary>
+    private void UpdateRegion()
+    {
+        if (Width <= 0 || Height <= 0) return;
+
+        using var path = Round.Path(new RectangleF(0, 0, Width, Height), Dpi.PxF(this, 12));
+        Region?.Dispose();
+        Region = new Region(path);
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+
+        // Win11 的原生圆角 + 阴影, 拿不到就靠上面的 Region 兜底。
+        try
+        {
+            int pref = 2; // DWMWCP_ROUND
+            _ = DwmSetWindowAttribute(Handle, 33, ref pref, sizeof(int));
+        }
+        catch { }
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+        using (var bg = new SolidBrush(Theme.WinBg))
+            g.FillRectangle(bg, ClientRectangle);
+
+        DrawTitleBar(g);
+
+        int titleH = Dpi.Px(this, DesignTitleHeight);
+        using var sep = new Pen(Theme.LineSoft);
+        g.DrawLine(sep, 0, titleH, Width, titleH);
+
+        // 图标区域之外再画一圈细描边, 让无边框窗口有边界感
+        using var border = new Pen(Theme.Line);
+        using var outline = Round.Path(Round.Inset(new RectangleF(0, 0, Width, Height), 0.5f), Dpi.PxF(this, 12));
+        g.DrawPath(border, outline);
+    }
+
+    private void DrawTitleBar(Graphics g)
+    {
+        int padX = Dpi.Px(this, 16);
+        int titleH = Dpi.Px(this, DesignTitleHeight);
+
+        // 品牌框: 28x28 圆角 7, 底色 panel-2, 里面画风扇
+        int mark = Dpi.Px(this, 28);
+        int markY = (titleH - mark) / 2;
+        var markRect = new RectangleF(padX, markY, mark, mark);
+
+        using (var markPath = Round.Path(markRect, Dpi.PxF(this, 7)))
+        using (var markFill = new SolidBrush(Theme.Panel2))
+        {
+            g.FillPath(markFill, markPath);
+        }
+
+        DrawFanGlyph(g, new RectangleF(markRect.X + mark * 0.18f, markRect.Y + mark * 0.18f, mark * 0.64f, mark * 0.64f));
+
+        // 品牌名 + 副标题
+        int textX = (int)markRect.Right + Dpi.Px(this, 10);
+        TextRenderer.DrawText(g, "WujieFan", Theme.BrandName,
+            new Rectangle(textX, Dpi.Px(this, 11), Dpi.Px(this, 160), Dpi.Px(this, 18)),
+            Theme.Text1, TextFormatFlags.Left | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
+
+        TextRenderer.DrawText(g, "无界14+ 风扇转速", Theme.BrandTag,
+            new Rectangle(textX, Dpi.Px(this, 27), Dpi.Px(this, 160), Dpi.Px(this, 16)),
+            Theme.Text3, TextFormatFlags.Left | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
+
+        DrawTitleButton(g, _minRect, _hoverMin, false);
+        DrawTitleButton(g, _closeRect, _hoverClose, true);
+    }
+
+    /// <summary>三叶风扇符号。用 Bezier 画, 不依赖任何图标字体。</summary>
+    private static void DrawFanGlyph(Graphics g, RectangleF box)
+    {
+        float cx = box.X + box.Width / 2f;
+        float cy = box.Y + box.Height / 2f;
+        float r = box.Width / 2f;
+
+        using var brush = new SolidBrush(Theme.Accent);
+
+        for (int i = 0; i < 3; i++)
+        {
+            float start = -90f + i * 120f;
+            double a0 = start * Math.PI / 180.0;
+            double a1 = (start + 120f) * Math.PI / 180.0;
+
+            var p0 = new PointF(cx, cy);
+            var p1 = new PointF(
+                (float)(cx + Math.Cos(a0) * r * 1.05),
+                (float)(cy + Math.Sin(a0) * r * 1.05));
+            var p2 = new PointF(
+                (float)(cx + Math.Cos(a1) * r * 1.05),
+                (float)(cy + Math.Sin(a1) * r * 1.05));
+
+            using var path = new GraphicsPath();
+            path.AddBezier(p0, p1, p2, p0);
+            path.CloseFigure();
+            g.FillPath(brush, path);
+        }
+
+        float hub = Math.Max(1.5f, r * 0.26f);
+        using var hubBrush = new SolidBrush(Theme.Text1);
+        g.FillEllipse(hubBrush, cx - hub, cy - hub, hub * 2, hub * 2);
+    }
+
+    private void DrawTitleButton(Graphics g, Rectangle rect, bool hover, bool isClose)
+    {
+        if (rect.IsEmpty) return;
+
+        if (hover)
+        {
+            using var hoverPath = Round.Path(new RectangleF(rect.X, rect.Y, rect.Width, rect.Height), Dpi.PxF(this, 7));
+            using var hoverBrush = new SolidBrush(isClose ? Theme.Err : Theme.Panel2);
+            g.FillPath(hoverBrush, hoverPath);
+        }
+
+        Color ink = hover && isClose ? Color.White : (hover ? Theme.Text1 : Theme.Text2);
+        using var pen = new Pen(ink, Dpi.PxF(this, 1.4f))
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+        };
+
+        float cxp = rect.X + rect.Width / 2f;
+        float cyp = rect.Y + rect.Height / 2f;
+        float half = Dpi.PxF(this, 4.5f);
+
+        if (isClose)
+        {
+            g.DrawLine(pen, cxp - half, cyp - half, cxp + half, cyp + half);
+            g.DrawLine(pen, cxp + half, cyp - half, cxp - half, cyp + half);
+        }
+        else
+        {
+            g.DrawLine(pen, cxp - half, cyp, cxp + half, cyp);
+        }
+    }
+
+    // ---------------------------------------------------------------- 标题栏交互
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        bool hm = _minRect.Contains(e.Location);
+        bool hc = _closeRect.Contains(e.Location);
+
+        if (hm != _hoverMin || hc != _hoverClose)
+        {
+            _hoverMin = hm;
+            _hoverClose = hc;
+            Invalidate(new Rectangle(0, 0, Width, Dpi.Px(this, DesignTitleHeight)));
+        }
+
+        Cursor = (hm || hc) ? Cursors.Hand : Cursors.Default;
+        base.OnMouseMove(e);
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        if (_hoverMin || _hoverClose)
+        {
+            _hoverMin = false;
+            _hoverClose = false;
+            Invalidate(new Rectangle(0, 0, Width, Dpi.Px(this, DesignTitleHeight)));
+        }
+        Cursor = Cursors.Default;
+        base.OnMouseLeave(e);
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left) return;
+
+        if (_closeRect.Contains(e.Location))
+        {
+            Close();
+            return;
+        }
+
+        if (_minRect.Contains(e.Location))
+        {
+            HideToTray();
+            return;
+        }
+
+        // 标题栏其余部分 = 拖动窗口。走系统非客户区命中, 手感与原生窗口一致。
+        if (e.Y < Dpi.Px(this, DesignTitleHeight))
+        {
+            ReleaseCapture();
+            _ = SendMessage(Handle, 0x00A1, 0x0002, 0); // WM_NCLBUTTONDOWN / HTCAPTION
+            return;
+        }
+
+        base.OnMouseDown(e);
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, int wParam, int lParam);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+
+    // ---------------------------------------------------------------- 托盘
 
     private void CreateTrayIcon()
     {
@@ -219,23 +466,41 @@ public sealed class MainForm : Form
             // 托盘建不出来时至少要把窗口留住, 否则关掉窗口就再也找不回来了。
             _settings.MinimizeToTray = false;
             _trayIcon = null;
-            SetStatus("托盘图标创建失败, 已改为关窗口即退出: " + ex.Message, Color.DarkOrange);
+            SetStatus("托盘图标创建失败, 已改为关窗口即退出: " + ex.Message, Theme.Warn);
         }
     }
 
-    /// <summary>把异常写进 %LOCALAPPDATA%\WujieFan\ui.log, 便于排查"程序突然没了"这类问题。</summary>
-    internal static void UiLog(string message) => WujieFan.Program.UiLog(message);
     private ContextMenuStrip BuildTrayMenu()
     {
-        var menu = new ContextMenuStrip();
-        menu.Items.Add("显示主窗口", null, (_, _) => RestoreFromTray());
+        var menu = new ContextMenuStrip
+        {
+            BackColor = Theme.Panel,
+            ForeColor = Theme.Text1,
+            Font = Theme.RowLabel,
+            Renderer = new TrayMenuRenderer(),
+            ShowImageMargin = true,
+        };
+
+        menu.Items.Add(new ToolStripMenuItem("显示主窗口", TrayIcons.Show(16), (_, _) => RestoreFromTray()));
 
         // 逃生口: 不论程序内部状态如何, 点一下就把 EC 交还自动。
         // 面板上那个勾选框万一因为界面卡住点不动, 这里是最后一条路。
-        menu.Items.Add("恢复自动风扇", null, (_, _) => EmergencyRestoreAuto("托盘菜单"));
-        menu.Items.Add("重新检测机型", null, (_, _) => RetryHardwareCheck());
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("退出 WujieFan", null, (_, _) => ExitApplication());
+        menu.Items.Add(new ToolStripMenuItem("恢复自动风扇", TrayIcons.Restore(16), (_, _) => EmergencyRestoreAuto("托盘菜单")));
+        menu.Items.Add(new ToolStripMenuItem("重新检测机型", TrayIcons.Rescan(16), (_, _) => RetryHardwareCheck()));
+        var sep = new ToolStripSeparator { Margin = new Padding(8, 4, 8, 4) };
+        menu.Items.Add(sep);
+
+        var exitItem = new ToolStripMenuItem("退出 WujieFan", TrayIcons.Exit(16), (_, _) => ExitApplication());
+        exitItem.ForeColor = Theme.Err;
+        menu.Items.Add(exitItem);
+
+        // 注意: 这一轮只给普通项上色, 不要把 exitItem 的红色覆盖回去。
+        foreach (ToolStripItem item in menu.Items)
+        {
+            if (item is ToolStripSeparator || ReferenceEquals(item, exitItem)) continue;
+            item.ForeColor = Theme.Text1;
+        }
+
         return menu;
     }
 
@@ -291,6 +556,8 @@ public sealed class MainForm : Form
         Close();
     }
 
+    // ---------------------------------------------------------------- 生命周期
+
     private void OnFormLoad(object? sender, EventArgs e)
     {
         CreateTrayIcon();
@@ -305,13 +572,14 @@ public sealed class MainForm : Form
         {
             if (_autoStart.HasForeignTask())
             {
-                _autoStartCheck.Enabled = false;
-                _autoStartCheck.Text = "开机自动启动 (同名任务已存在, 已锁定)";
+                _autoStartRow.Enabled = false;
+                _autoStartRow.Text = "开机自动启动";
+                _autoStartRow.Hint = "(同名任务已存在, 已锁定)";
             }
             else
             {
                 bool enabled = _autoStart.IsEnabled();
-                _autoStartCheck.Checked = enabled;
+                _autoStartRow.SetCheckedSilently(enabled);
 
                 // 已启用时还要检查任务定义是不是当前版本的要求。
                 // 0.1.0 用 schtasks 模板建的旧任务带着"拔电源不启动"和"72 小时被强杀",
@@ -321,7 +589,7 @@ public sealed class MainForm : Form
                 {
                     AutoStartManager.Result fix = _autoStart.Enable();
                     if (!fix.Ok)
-                        SetStatus("自启动任务更新失败: " + fix.Message.Split('\n')[0], Color.DarkOrange);
+                        SetStatus("自启动任务更新失败: " + fix.Message.Split('\n')[0], Theme.Warn);
                 }
             }
         }
@@ -330,7 +598,7 @@ public sealed class MainForm : Form
             _suppressAutoStartEvent = false;
         }
 
-        (Controls["modelLabel"] as Label)!.Text = DescribeMachine();
+        _machineLabel.Text = DescribeMachine();
 
         _timer.Interval = Math.Clamp(_settings.PollIntervalMs, 200, 10000);
         _timer.Tick += OnTick;
@@ -371,7 +639,7 @@ public sealed class MainForm : Form
         FanMode want = _settings.FanMode;
 
         _suppressFanModeEvent = true;
-        try { _strongCoolCheck.Checked = want == FanMode.StrongCool; }
+        try { _strongCoolRow.SetCheckedSilently(want == FanMode.StrongCool); }
         finally { _suppressFanModeEvent = false; }
 
         // 值和意愿已经一致, 不必再写 EC —— 少一次写入就少一次出错机会。
@@ -415,7 +683,7 @@ public sealed class MainForm : Form
                 _settings.ForceUnsupported
                     ? $"已连接 · PawnIO {_reader.PawnIoVersion} · 已跳过机型校验"
                     : $"已连接 · PawnIO {_reader.PawnIoVersion}",
-                _settings.ForceUnsupported ? Color.DarkOrange : Color.Green);
+                _settings.ForceUnsupported ? Theme.Warn : Theme.Ok);
 
             // 重连成功后要补建共享内存: 如果启动时设备没打开, 之前那次 ApplyPublishMode
             // 根本不会执行, _aida 一直是 null, 之后即使读到数据也永远不会往 RTSS 送。
@@ -437,28 +705,26 @@ public sealed class MainForm : Form
             if (interactive) ShowBlockingMessage(ex.Reason, ex.Guidance);
             SetStatus(_settings.ForceUnsupported
                 ? "机型不受支持 (已选择强行读取), 读取失败"
-                : "机型不受支持, 已停止读取", Color.Firebrick);
+                : "机型不受支持, 已停止读取", Theme.Err);
             return false;
         }
         catch (Exception ex)
         {
             _reader?.Dispose();
             _reader = null;
-            SetStatus("打不开硬件: " + ex.Message, Color.Firebrick);
+            SetStatus("打不开硬件: " + ex.Message, Theme.Err);
             return false;
         }
     }
 
-    /// <summary>询问用户是否在机型不符的情况下继续。用户点"是"就直接重新打开。</summary>
+    /// <summary>询问用户是否在机型不符的情况下继续。用户点"继续"就直接重新打开。</summary>
     private void ShowBlockingMessage(string reason, string guidance)
     {
-        DialogResult r = MessageBox.Show(this,
+        bool go = DarkDialog.Ask(this, "硬件不受支持",
             reason + "\n\n" + guidance + "\n\n是否仍然继续? (可能显示错误的风扇转速)",
-            "WujieFan - 硬件不受支持",
-            MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+            yes: "继续读取", no: "取消", tone: DarkDialog.Tone.Warning);
 
-        if (r != DialogResult.Yes)
-            return;
+        if (!go) return;
 
         _settings.ForceUnsupported = true;
         _settings.Save();
@@ -505,7 +771,7 @@ public sealed class MainForm : Form
                 string why = "读取异常: " + sample.Error;
                 OpenReader(interactive: false);
                 if (_reader is null || !_reader.IsOpen)
-                    SetStatus(why, Color.Firebrick);
+                    SetStatus(why, Theme.Err);
                 _consecutiveErrors = 0;
             }
             return;
@@ -515,11 +781,11 @@ public sealed class MainForm : Form
 
         if (sample.Fans.Count >= 2)
         {
-            _fan1Value.Text = FormatRpm(sample.Fans[0]);
-            _fan2Value.Text = FormatRpm(sample.Fans[1]);
+            ApplyFanCard(_fan1Card, sample.Fans[0]);
+            ApplyFanCard(_fan2Card, sample.Fans[1]);
         }
 
-        _tempValue.Text = sample.Temperature?.ToString() ?? "--";
+        _tempCard.Value = sample.Temperature?.ToString() ?? "--";
 
         // 每秒用 EC 回读的真实模式校准界面。
         // 别的程序 (或用户自己用实验工具) 把标志改掉时, 这里能立刻反映出来,
@@ -528,7 +794,7 @@ public sealed class MainForm : Form
         {
             UpdateFanModeUi(sample.Mode);
             _suppressFanModeEvent = true;
-            try { _strongCoolCheck.Checked = sample.Mode == FanModeState.StrongCool; }
+            try { _strongCoolRow.SetCheckedSilently(sample.Mode == FanModeState.StrongCool); }
             finally { _suppressFanModeEvent = false; }
         }
 
@@ -553,10 +819,19 @@ public sealed class MainForm : Form
                     // 写失败说明映射已经不可用, 丢掉, 下一轮在这里重建。
                     _aida.Dispose();
                     _aida = null;
-                    SetStatus("向 RTSS 供数失败: " + ex.Message, Color.DarkOrange);
+                    SetStatus("向 RTSS 供数失败: " + ex.Message, Theme.Warn);
                 }
             }
         }
+    }
+
+    /// <summary>把一次读数刷到卡片上, 同时按可信度决定小圆点颜色。</summary>
+    private static void ApplyFanCard(DataCard card, FanReading f)
+    {
+        card.Value = FormatRpm(f);
+
+        // 圆点语义: 有可信读数=绿; 停转=灰 (正常但值得注意); 不可信=橙。
+        card.DotColor = !f.IsValid ? Theme.Warn : (f.IsStopped ? Theme.Text3 : Theme.Ok);
     }
 
     /// <summary>
@@ -631,7 +906,7 @@ public sealed class MainForm : Form
                 // 状态栏就被这条假错误一直刷屏, 真正的失败原因反而看不见了。
                 _aida?.Dispose();
                 _aida = null;
-                SetStatus("打不开 AIDA64 共享内存: " + ex.Message, Color.DarkOrange);
+                SetStatus("打不开 AIDA64 共享内存: " + ex.Message, Theme.Warn);
             }
         }
         else
@@ -641,76 +916,149 @@ public sealed class MainForm : Form
         }
     }
 
+    // ---------------------------------------------------------------- 开机自启动
+
+    private void OnAutoStartChanged(object? sender, EventArgs e)
+{
+        if (_suppressAutoStartEvent) return;
+        if (_autoStart is null) return;
+
+        AutoStartManager.Result result = _autoStartRow.Checked ? _autoStart.Enable() : _autoStart.Disable();
+
+        if (result.Ok)
+        {
+            SetStatus(result.Message.Split('\n')[0], Theme.Text2);
+            return;
+        }
+
+        SetStatus(result.Message.Split('\n')[0], Theme.Warn);
+        DarkDialog.Show(this, "开机自启动", result.Message, DarkDialog.Tone.Error);
+
+        // 失败必须把勾选拨回真实状态, 否则界面在撒谎: 用户以为已经开了。
+        // 用 SetCheckedSilently 而不是直接赋 Checked, 避免又触发一次 CheckedChanged。
+        _suppressAutoStartEvent = true;
+        try { _autoStartRow.SetCheckedSilently(_autoStart.IsEnabled()); }
+        finally { _suppressAutoStartEvent = false; }
+    }
+
+    // ---------------------------------------------------------------- 交还自动
+
     /// <summary>
-    /// 用户勾选/取消强冷。
+    /// 立刻把风扇交还 EC 自动模式, 并同步设置里记的意愿。
     ///
-    /// 失败时必须把勾选状态回滚 —— 界面显示"强冷中"而 EC 其实还在自动,
-    /// 是这套功能里最危险的假象。
+    /// 这是所有"收手"路径的唯一出口: 托盘菜单、过热保护、程序退出、关机。
+    /// 集中在一处是为了保证每条路径都做同样的事 —— 尤其都要把 _settings.FanMode
+    /// 也改回 Auto, 否则下次启动的归一化会把风扇又拉满。
     /// </summary>
+    private void EmergencyRestoreAuto(string why)
+{
+        // 先改设置再动硬件: 万一 SetMode 抛异常, 至少下次启动不会再拉满。
+        _settings.FanMode = FanMode.Auto;
+        _settings.Save();
+
+        _suppressFanModeEvent = true;
+        try { _strongCoolRow.SetCheckedSilently(false); }
+        finally { _suppressFanModeEvent = false; }
+
+        if (_reader is { IsOpen: true })
+        {
+            FanModeResult r = _reader.SetMode(FanMode.Auto);
+            if (!r.Ok)
+            {
+                UiLog("EmergencyRestoreAuto (" + why + ") FAILED: " + r.Message);
+                SetStatus("恢复自动风扇失败: " + r.Message, Theme.Err);
+                return;
+            }
+
+            UpdateFanModeUi(FanModeState.Auto);
+        }
+
+        UiLog("EmergencyRestoreAuto (" + why + ") ok");
+
+        if (why == "过热保护")
+        {
+            // 这种情况必须让用户知道: 他们以为强冷在跑, 实际已经被撤掉了。
+            _emergencyRestored = true;
+            SetStatus("温度过高, 已自动交还风扇控制给 EC (强冷模式已取消)。", Theme.Warn);
+            DarkDialog.Show(this, "过热保护",
+                $"CPU 温度连续 {EcRegisters.EmergencyHoldSamples} 次达到 {EcRegisters.EmergencyTemperatureC}C, 已把风扇交还 EC 自动控制。" +
+                "\n\n这通常意味着强冷没有生效 (EC 没有接受手动 PWM)。建议检查散热环境, 或先关闭强冷。",
+                DarkDialog.Tone.Warning);
+        }
+        else if (why == "程序退出")
+        {
+            // 用户正要退出, 不需要再告诉他什么。
+        }
+        else
+        {
+            SetStatus($"已交还自动模式 ({why})。", Theme.Text2);
+        }
+    }
+    // ---------------------------------------------------------------- 风扇模式
+
     private void OnStrongCoolChanged(object? sender, EventArgs e)
     {
         if (_suppressFanModeEvent) return;
-        if (_fanModeBusy) return;
 
-        bool want = _strongCoolCheck.Checked;
-        SetFanMode(want ? FanMode.StrongCool : FanMode.Auto, userInitiated: true);
+        SetFanMode(_strongCoolRow.Checked ? FanMode.StrongCool : FanMode.Auto, userInitiated: true);
     }
 
-    /// <summary>
-    /// 执行一次模式切换并同步界面。返回是否成功。
-    /// </summary>
     /// <param name="userInitiated">
-    /// 用户点击时为 true, 失败要弹框说明; 启动归一化/看门狗为 false, 只写状态栏。
+    /// 用户亲手点的 (要弹失败提示、失败要回滚勾选) 还是程序自己做的
+    /// (启动归一化、过热保护、退出恢复 —— 静默进行, 失败只写状态栏)。
     /// </param>
-    private bool SetFanMode(FanMode mode, bool userInitiated, string? reason = null)
+    private void SetFanMode(FanMode mode, bool userInitiated, string? reason = null)
     {
-        if (_fanModeBusy) return false;
-
-        if (_reader is null || !_reader.IsOpen)
-        {
-            if (userInitiated)
-                MessageBox.Show(this, "设备还没打开, 现在不能切换风扇模式。", "WujieFan",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            RevertFanModeCheck();
-            return false;
-        }
+        if (_fanModeBusy) return;
 
         _fanModeBusy = true;
         try
         {
-            FanModeResult r = _reader.SetMode(mode);
+            if (_reader is null || !_reader.IsOpen)
+            {
+                if (userInitiated)
+                {
+                    DarkDialog.Show(this, "风扇模式", "设备还没打开, 现在不能切换风扇模式。", DarkDialog.Tone.Warning);
+                    RevertFanModeCheck();
+                }
+                return;
+            }
 
-            // 无论成败都按设置里的真实意图落盘: 失败时保留用户的选择,
-            // 下次启动的归一化会再试一次, 而不是把用户的意愿悄悄忘掉。
+            FanModeResult result = _reader.SetMode(mode);
+
+            // 无论成败都记住用户的选择:
+            //   成功 -> 下次开机按这个模式归一化;
+            //   失败 -> 用户确实想要这个模式, 下次启动会再试一次。
+            // 但"用户选择"和"EC 实际状态"是两件事, 徽章只信后者。
             _settings.FanMode = mode;
             _settings.Save();
 
-            UpdateFanModeUi(r.State);
+            UpdateFanModeUi(result.State);
 
-            if (r.Ok)
+            if (result.Ok)
             {
-                _hotSamples = 0;
                 if (mode == FanMode.StrongCool)
                 {
+                    // 重新进入强冷, 让看门狗重新有机会工作。
                     _emergencyRestored = false;
-                    SetStatus("强冷已开启: 两个风扇满转 (约 5700 RPM), 温度会明显下降。", Color.DarkGreen);
+                    _hotSamples = 0;
+                    SetStatus("强冷已开启: 两个风扇满转 (约 5700 RPM), 温度会明显下降。", Theme.Ok);
                 }
                 else
                 {
-                    SetStatus(reason is null ? "已交还自动模式, 由 EC 按温度曲线调速。" : reason, Color.DimGray);
+                    SetStatus(reason ?? "已交还自动模式, 由 EC 按温度曲线调速。", Theme.Text2);
                 }
-
-                return true;
             }
+            else
+            {
+                SetStatus(result.Message, Theme.Warn);
 
-            SetStatus(r.Message, Color.DarkOrange);
-
-            if (userInitiated)
-                MessageBox.Show(this, r.Message, "WujieFan - 风扇模式切换失败",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
-
-            RevertFanModeCheck();
-            return false;
+                if (userInitiated)
+                {
+                    DarkDialog.Show(this, "风扇模式切换失败", result.Message, DarkDialog.Tone.Error);
+                    RevertFanModeCheck();
+                }
+            }
         }
         finally
         {
@@ -718,170 +1066,90 @@ public sealed class MainForm : Form
         }
     }
 
-    /// <summary>把勾选框拉回 EC 的真实状态, 而不是设置里的意愿。</summary>
+    /// <summary>把勾选状态拉回 EC 的真实状态。切换失败时必须调, 否则界面会撒谎。</summary>
     private void RevertFanModeCheck()
     {
         FanModeState actual = _reader?.ReadModeState() ?? FanModeState.Unknown;
         UpdateFanModeUi(actual);
 
         _suppressFanModeEvent = true;
-        try { _strongCoolCheck.Checked = actual == FanModeState.StrongCool; }
+        try { _strongCoolRow.SetCheckedSilently(actual == FanModeState.StrongCool); }
         finally { _suppressFanModeEvent = false; }
     }
 
-    /// <summary>按 EC 回读到的真实模式刷新文字与勾选。</summary>
+    /// <summary>徽章永远显示 EC 回读出来的真实状态, 而不是我们以为自己设置的状态。</summary>
     private void UpdateFanModeUi(FanModeState state)
     {
         switch (state)
         {
             case FanModeState.Auto:
-                _fanModeState.Text = "实际: 自动";
-                _fanModeState.ForeColor = Color.Gray;
+                _strongCoolRow.SetBadgeTone("实际: 自动", Theme.Text2, Theme.Panel2, Theme.LineSoft);
                 break;
 
             case FanModeState.StrongCool:
-                _fanModeState.Text = "实际: 强冷";
-                _fanModeState.ForeColor = Color.DarkGreen;
+                // 绿色 10% 透明底色: 与设计稿 .badge.cool 的 rgba 效果一致。
+                _strongCoolRow.SetBadgeTone("实际: 强冷", Theme.Ok, Blend(Theme.Panel, Theme.Ok, 0.10f), Blend(Theme.Line, Theme.Ok, 0.45f));
                 break;
 
             case FanModeState.Mixed:
-                _fanModeState.Text = "实际: 异常标志";
-                _fanModeState.ForeColor = Color.DarkOrange;
+                // 两路标志不一致, 或者落在 0xA5/0xCC 这些我们没实现的模式上。
+                _strongCoolRow.SetBadgeTone("实际: 异常标志", Theme.Warn, Blend(Theme.Panel, Theme.Warn, 0.10f), Blend(Theme.Line, Theme.Warn, 0.45f));
                 break;
 
             default:
-                _fanModeState.Text = "";
-                _fanModeState.ForeColor = Color.Gray;
+                // 设备没打开, 我们不知道真实状态, 就不显示任何断言。
+                _strongCoolRow.SetBadgeTone("", Theme.Text3, Color.Transparent, Color.Transparent);
                 break;
         }
     }
 
+    /// <summary>把 b 按 t 的比例混进 a。用来做设计稿里那种"语义色 10% 底"。</summary>
+    private static Color Blend(Color a, Color b, float t)
+    {
+        t = Math.Clamp(t, 0f, 1f);
+        return Color.FromArgb(
+            (int)Math.Round(a.R + (b.R - a.R) * t),
+            (int)Math.Round(a.G + (b.G - a.G) * t),
+            (int)Math.Round(a.B + (b.B - a.B) * t));
+    }
+
+    // ---------------------------------------------------------------- 关闭与托盘
+
     /// <summary>
-    /// 强制交还自动模式。托盘菜单、过热看门狗、退出程序都走这里。
-    ///
-    /// 与 SetFanMode 的区别: 它不看 _settings、不回读校验失败就重试,
-    /// 而且即使设备已经打不开也照样把设置改成 Auto —— 下次启动会再归一化一次。
-    /// 逃生口必须比"正常路径"更难失败。
+    /// 用户点 × 时收进托盘而不是退出 —— 但只在真的建出托盘图标时才这么做。
+    /// 托盘没建起来还隐藏窗口, 用户就再也找不回这个程序了, 只能去任务管理器杀。
     /// </summary>
-    private void EmergencyRestoreAuto(string why)
-    {
-        _settings.FanMode = FanMode.Auto;
-        _settings.Save();
-
-        _suppressFanModeEvent = true;
-        try { _strongCoolCheck.Checked = false; }
-        finally { _suppressFanModeEvent = false; }
-
-        if (_reader is { IsOpen: true })
-        {
-            FanModeResult r = _reader.SetMode(FanMode.Auto);
-            UpdateFanModeUi(r.State);
-
-            if (!r.Ok)
-            {
-                UiLog("EmergencyRestoreAuto FAILED (" + why + "): " + r.Message);
-                SetStatus("恢复自动风扇失败: " + r.Message, Color.Firebrick);
-                return;
-            }
-        }
-        else
-        {
-            UpdateFanModeUi(FanModeState.Unknown);
-        }
-
-        UiLog("EmergencyRestoreAuto (" + why + ") ok");
-
-        if (why == "过热保护")
-        {
-            SetStatus("温度过高, 已自动交还风扇控制权给 EC。", Color.DarkOrange);
-            _emergencyRestored = true;
-            if (!_settings.MinimizeToTray || Visible)
-            {
-                MessageBox.Show(this,
-                    $"CPU 温度连续 {EcRegisters.EmergencyHoldSamples} 次达到 {EcRegisters.EmergencyTemperatureC}°C 以上, " +
-                    "已自动关闭强冷模式, 把风扇交还给 EC 固件调速。\n\n" +
-                    "如果温度仍然偏高, 请检查散热口是否被挡住。",
-                    "WujieFan - 过热保护", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
-        }
-        else if (why == "程序退出")
-        {
-            // 退出时写状态栏没意义, 窗口马上就没了, 只记日志。
-        }
-        else
-        {
-            SetStatus("已交还自动模式 (" + why + ")。", Color.DimGray);
-        }
-    }
-
-    private void OnAutoStartChanged(object? sender, EventArgs e)
-    {
-        if (_autoStart is null) return;
-
-        // 初始化时回填勾选状态不该被当成用户操作。
-        if (_suppressAutoStartEvent) return;
-
-        AutoStartManager.Result r = _autoStartCheck.Checked ? _autoStart.Enable() : _autoStart.Disable();
-
-        if (!r.Ok)
-        {
-            MessageBox.Show(this, r.Message, "WujieFan", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            // 回滚勾选状态, 避免界面与实际不符。
-            _autoStartCheck.CheckedChanged -= OnAutoStartChanged;
-            _autoStartCheck.Checked = _autoStart.IsEnabled();
-            _autoStartCheck.CheckedChanged += OnAutoStartChanged;
-            return;
-        }
-
-        SetStatus(r.Message.Split('\n')[0], Color.DimGray);
-    }
-
-    private void SetStatus(string text, Color color)
-    {
-        _statusLabel.Text = text;
-        _statusLabel.ForeColor = color;
-    }
-
     private void OnFormClosing(object? sender, FormClosingEventArgs e)
     {
-
-        // 点右上角关闭 = 收进托盘继续在后台供数; 只有托盘菜单的"退出"才真的结束进程。
-        // 没有托盘图标时绝不能隐藏窗口 —— 那会让进程彻底失去入口, 只能去任务管理器杀。
-        if (_exiting
-            || e.CloseReason != CloseReason.UserClosing
-            || !_settings.MinimizeToTray
-            || _trayIcon is null)
+        if (_exiting || e.CloseReason != CloseReason.UserClosing || !_settings.MinimizeToTray || _trayIcon is null)
             return;
 
         e.Cancel = true;
 
-        // 关键: 不能在 FormClosing 里直接改 ShowInTaskbar —— 那会重建窗口句柄,
-        // 让这次的"取消关闭"失效, 进程会被真的关掉。必须等关闭流程走完再隐藏。
+        // 不能在 FormClosing 里直接改 ShowInTaskbar: 那会重建窗口句柄,
+        // 重建之后 e.Cancel 就失效了, 进程会真的退出。
+        // 必须延后到关闭流程结束之后再隐藏。
         BeginInvoke(new Action(HideToTray));
     }
 
     private void HideToTray()
     {
-        // 没有托盘图标就无处可回, 宁可留着窗口也不隐藏。
         if (_trayIcon is null) return;
-
-        // WindowState 变化会再次触发 Resize, 用标志位挡住重入。
         if (_hidingToTray) return;
-        _hidingToTray = true;
 
+        _hidingToTray = true;
         try
         {
-            // 先隐藏再改 ShowInTaskbar: 句柄重建发生在不可见状态下, 不会闪一下。
             WindowState = FormWindowState.Minimized;
-            Hide();
             ShowInTaskbar = false;
+            Hide();
 
-            if (!_trayHintShown && _trayIcon is not null)
+            // 只在第一次收进托盘时提示一次, 之后每天开机都弹就是骚扰了。
+            if (!_trayHintShown)
             {
                 _trayHintShown = true;
                 _trayIcon.BalloonTipTitle = "WujieFan 仍在后台运行";
                 _trayIcon.BalloonTipText = "风扇转速照常读数并送往 RTSS。双击托盘图标可以重新打开窗口, 右键可以退出。";
-                _trayIcon.BalloonTipIcon = ToolTipIcon.Info;
                 _trayIcon.ShowBalloonTip(4000);
             }
         }
@@ -893,71 +1161,84 @@ public sealed class MainForm : Form
 
     private void OnFormResize(object? sender, EventArgs e)
     {
+        // Relayout 会改 ClientSize, 也会触发 Resize, 但那不是"用户最小化了窗口"。
         if (WindowState == FormWindowState.Minimized && _settings.MinimizeToTray && !_exiting)
             BeginInvoke(new Action(HideToTray));
     }
 
+    // ---------------------------------------------------------------- 电源事件
+
     private void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
     {
-        if (e.Mode != PowerModes.Resume || IsDisposed) return;
+        // 这个事件来自系统线程, 必须切回 UI 线程再动控件。
+        if (e.Mode != PowerModes.Resume) return;
+        if (_disposedUi || IsDisposed) return;
 
-        // SystemEvents.PowerModeChanged 在系统事件线程上触发, 不是 UI 线程。
-        // 直接在这里 OpenReader() 会跨线程碰控件 (SetStatus) 和 WinForms 定时器, 必须转回 UI 线程。
-        if (InvokeRequired)
+        try
         {
-            try { BeginInvoke(new Action(OnResume)); } catch (ObjectDisposedException) { }
-            return;
+            if (InvokeRequired) BeginInvoke(new Action(OnResume));
+            else OnResume();
         }
-
-        OnResume();
-    }
-
-    /// <summary>
-    /// 注销 / 关机。这是最后一个能写 EC 的时机 —— 之后的复位是冷启动,
-    /// 但"重启"不算冷启动, 会把手动标志留在 RAM 里。
-    /// 这里主动交还, 让重启后的表现也可预期。
-    /// </summary>
-    private void OnSessionEnding(object sender, SessionEndingEventArgs e)
-    {
-        if (_disposedUi) return;
-
-        // 系统事件线程上不能碰控件, 但既然窗口马上要销毁, 直接写 EC 就够了。
-        RestoreAutoOnShutdown();
-
-        _settings.FanMode = FanMode.Auto;
-        _settings.Save();
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
     }
 
     private void OnResume()
     {
-        if (_disposedUi) return;
+        if (_disposedUi || IsDisposed) return;
 
-        // 从休眠/睡眠恢复后 EC 句柄可能失效, 主动重连一次。
+        // 休眠恢复后 EC 句柄通常已经作废, 定时器会一直读到错误。直接重连一次。
         _timer.Stop();
-        OpenReader(interactive: false);
-        ApplyPublishMode();
-        _timer.Start();
+        try
+        {
+            OpenReader(interactive: false);
+            ApplyPublishMode();
+        }
+        finally
+        {
+            _timer.Start();
+        }
+
         OnTick(null, EventArgs.Empty);
     }
 
-    /// <summary>
-    /// 关闭时最后一次交还自动模式。不更新界面 (窗口正在销毁), 只写日志。
-    /// </summary>
+    private void OnSessionEnding(object? sender, SessionEndingEventArgs e)
+    {
+        // 注销/关机前把风扇交还自动。用户下次开机时 EC 大概率已经掉电复位,
+        // 但"重启"走的是软复位, EC RAM 不清 —— 那样下次开机就会出现满转风扇。
+        RestoreAutoOnShutdown();
+
+        // 同时把设置里记的模式改回自动:
+        // 如果留着强冷, 下次开机会按设置重新拉满, 而用户刚才是关机, 不是要强冷。
+        _settings.FanMode = FanMode.Auto;
+        _settings.Save();
+    }
+
     private void RestoreAutoOnShutdown()
     {
-        try
-        {
-            if (_reader is not { IsOpen: true }) return;
-            if (_reader.ReadModeState() != FanModeState.StrongCool) return;
+        if (_reader is not { IsOpen: true }) return;
+        if (_reader.ReadModeState() != FanModeState.StrongCool) return;
 
-            FanModeResult r = _reader.SetMode(FanMode.Auto);
-            UiLog("RestoreAutoOnShutdown: " + (r.Ok ? "ok" : r.Message));
-        }
-        catch (Exception ex)
-        {
-            UiLog("RestoreAutoOnShutdown EXCEPTION: " + ex.Message);
-        }
+        FanModeResult r = _reader.SetMode(FanMode.Auto);
+        UiLog("RestoreAutoOnShutdown: " + (r.Ok ? "ok" : r.Message));
     }
+
+    // ---------------------------------------------------------------- 状态栏
+
+    /// <summary>写状态栏。颜色只允许传语义色的那几种, 圆的颜色由它推导。</summary>
+    private void SetStatus(string text, Color color)
+    {
+        Color dot = color == Theme.Ok || color == Theme.Warn || color == Theme.Err
+            ? color
+            : Color.Transparent;
+
+        _statusBar.SetStatus(text, color, dot);
+
+        // 文案变长时状态栏要变高, 窗口跟着长 —— 不重排就会被裁掉。
+        Relayout();
+    }
+
+    // ---------------------------------------------------------------- 释放
 
     private void CloseReader()
     {
@@ -970,16 +1251,19 @@ public sealed class MainForm : Form
         if (disposing)
         {
             _disposedUi = true;
+
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             SystemEvents.SessionEnding -= OnSessionEnding;
+
             _timer.Stop();
 
-            // 兜底: 走到 Dispose 说明监听的窗口已经关了, 无论如何不该把 EC 留在手动模式。
-            // 正常情况下 ExitApplication 已经交还过了, 这里再核对一次是幂等且便宜的。
+            // 正常退出时也要交还风扇。托盘菜单的"退出"已经调过一次, 但
+            // Dispose 是从别的路径进来的 (比如系统注销), 这里必须再兜一次。
             RestoreAutoOnShutdown();
 
             _timer.Dispose();
             CloseReader();
+
             _aida?.Dispose();
             _aida = null;
 
@@ -991,6 +1275,7 @@ public sealed class MainForm : Form
                 _trayIcon = null;
             }
         }
+
         base.Dispose(disposing);
     }
 
@@ -999,14 +1284,18 @@ public sealed class MainForm : Form
         var asm = typeof(FanReader).Assembly;
         foreach (string name in asm.GetManifestResourceNames())
         {
-            if (name.EndsWith("LpcIO.bin", StringComparison.OrdinalIgnoreCase))
-            {
-                using Stream s = asm.GetManifestResourceStream(name)!;
-                using var ms = new MemoryStream();
-                s.CopyTo(ms);
-                return ms.ToArray();
-            }
+            if (!name.EndsWith("LpcIO.bin", StringComparison.OrdinalIgnoreCase)) continue;
+
+            using Stream? s = asm.GetManifestResourceStream(name);
+            if (s is null) continue;
+
+            using var buffer = new MemoryStream();
+            s.CopyTo(buffer);
+            return buffer.ToArray();
         }
+
         throw new FileNotFoundException("找不到 LpcIO.bin 嵌入资源。");
     }
+
+    private static void UiLog(string message) => global::WujieFan.Program.UiLog(message);
 }

@@ -9,6 +9,11 @@ MECHREVO 无界14+（ARN39P-TF / Ryzen 7 7840HS / ITE EC 2.12 / BIOS 2.31）的�
 另外提供一个**风扇强冷模式**（0.3.0 新增）：一键把两个风扇拉到满转，用来压制持续高负载。
 只有「自动 / 强冷」两档，**只升不降** —— 理由见下方「风扇控制」。
 
+界面在 0.4.0 按设计稿重做：深色圆角无边框窗口、三列数据卡、整行开关、状态栏语义圆点，
+弹窗与托盘菜单也换成同色系（不再是白底系统对话框）。
+
+![WujieFan 主界面](docs/images/ui-0.4.0-main.png)
+
 ## 现在的状态
 
 | 能力 | 状态 |
@@ -20,6 +25,7 @@ MECHREVO 无界14+（ARN39P-TF / Ryzen 7 7840HS / ITE EC 2.12 / BIOS 2.31）的�
 | 进入 RTSS，且**可拖动编辑** | 完成，端到端实测通过 |
 | 一键注入图层（幂等 + 可回滚） | 完成 |
 | 风扇强冷模式（自动 / 强冷两档） | 完成，0.3.0 新增，含五条安全兜底 |
+| 深色界面 / 自绘弹窗 / 深色托盘菜单 | 完成，0.4.0 按设计稿重做 |
 
 数据链路是：
 
@@ -43,10 +49,10 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 
 | 包 | 大小 | 前提 |
 |---|---|---|
-| `WujieFan-0.3.0-win-x64.zip` | 228 KB | 需 .NET 8 桌面运行时 |
-| `WujieFan-0.3.0-win-x64-portable.zip` | 91 MB | 免运行时，解压即用 |
+| `WujieFan-0.4.0-win-x64.zip` | 约 300 KB | 需 .NET 8 桌面运行时 |
+| `WujieFan-0.4.0-win-x64-portable.zip` | 约 95 MB | 免运行时，解压即用 |
 
-自己打包：`powershell -File tools\make-release.ps1 -Version 0.3.0`（需提权，产物在 `dist\`）。
+自己打包：`powershell -File tools\make-release.ps1 -Version 0.4.0`（需提权，产物在 `dist\`）。
 
 ## 快速开始
 
@@ -111,14 +117,37 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 
 ![勾选强冷后两个风扇满转](docs/images/fan-mode-strongcool.png)
 
-### 4. 关掉窗口不会退出
+### 4. 界面（0.4.0 重做）
+
+深色单窗口，432 宽（按 DPI 等比放大），无系统边框 —— 标题栏、最小化、关闭都是自绘的，
+圆角由 `DwmSetWindowAttribute(DWMWCP_ROUND)` + `Region` 双重保证。
+
+| 区域 | 内容 |
+|---|---|
+| 标题栏 | 品牌图标 + WujieFan / 无界14+ 风扇转速 + 最小化 / 关闭 |
+| 机型行 | 厂商 型号 · BIOS 版本 · EC 版本（读不到时显示「机器信息不可读」） |
+| 数据卡 ×3 | Fan1 (CPU) / Fan2 (GPU) / CPU 温度；左侧小圆点：绿=正常、灰=停转、橙=读数不可信 |
+| 开关行 ×3 | 开机自动启动 / 向 RTSS 提供数据 / 强冷模式；强冷那行右侧带「实际: 自动 / 强冷 / 异常标志」徽章 |
+| 状态栏 | 一行文字 + 语义色圆点（绿=正常、橙=警告、红=错误、无点=中性） |
+
+徽章显示的是**从 EC 回读的真实状态**，不是你点了什么 —— 切换失败会立刻回滚并把原因写进状态栏。
+
+托盘菜单与所有提示框也是深色自绘的：
+
+![深色托盘菜单](docs/images/ui-0.4.0-tray-menu.png)
+![深色提示弹窗](docs/images/ui-0.4.0-dialog.png)
+
+设计稿在 `UI/WujieFan-UI-设计稿.html`（单页 HTML 原型，含主界面 / 状态图鉴 / 设计规范三视图），
+颜色 token、字号层级、控件映射都在里面。
+
+### 5. 关掉窗口不会退出
 
 点右上角 × 只是收进托盘 —— 读数与供数照常继续，首次会弹一个气泡提示。
 
 - 唤回窗口：双击托盘图标，或右键 →「显示主窗口」，或**再运行一次 exe**（不会开第二个进程，而是把已有窗口叫到前台）。
 - 真的退出：右键托盘图标 →「退出 WujieFan」。
 
-### 5. 排查工具
+### 6. 排查工具
 
     python tools\read-aida.py -n 3          # WujieFan 到底写没写、写的数对不对
     python tools\peek-overlay.py --full     # RTSS 实际渲染出来的图层文本
@@ -133,7 +162,9 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 ## 目录
 
     assets\                程序图标源文件
+    UI\                   界面设计稿（单页 HTML 原型）
     src\WujieFan\          主程序（WinForms .NET 8 x64）
+    src\WujieFan\Ui\       界面：Theme / Controls / DarkDialog / MenuIcons / MainForm
     src\WujieFan.Launcher\ 开机自启动的提权中转（asInvoker，只做一次 ShellExecuteEx）
     src\WujieFan.Core\     核心库：读 EC / 机型校验 / AIDA 供数 / 设置 / 自启
     tests\EcReadSmoke\     命令行验证工具（含自启动往返测试）
@@ -147,7 +178,8 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 ## 技术文档
 
 - [docs/01-现状与技术总结.md](docs/01-现状与技术总结.md) —— EC 寄存器表、RTSS 内部机理、
-  六条数据通道的调研结论、失败的插件实验与真正原因、AIDA XML 解析器的硬性约束、踩坑清单。
+  六条数据通道的调研结论、失败的插件实验与真正原因、AIDA XML 解析器的硬性约束、
+  界面实现与截图方法论、56 条踩坑清单。
 
 ## 关键前提与风险
 
