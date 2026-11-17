@@ -49,10 +49,14 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 
 | 包 | 大小 | 前提 |
 |---|---|---|
-| `WujieFan-0.4.0-win-x64.zip` | 242,522 B（约 236.8 KiB） | 需 .NET 8 桌面运行时 |
-| `WujieFan-0.4.0-win-x64-portable.zip` | 95,216,209 B（约 90.8 MiB） | 免运行时，解压即用 |
+| `WujieFan-0.4.1-win-x64.zip` | 约 260 KiB | 需 .NET 8 桌面运行时 |
+| `WujieFan-0.4.1-win-x64-portable.zip` | 约 93.8 MiB | 免运行时，解压即用 |
 
-自己打包：`powershell -File tools\make-release.ps1 -Version 0.4.0`（需提权，产物在 `dist\`）。
+精确字节数与 sha256 见 Releases 页面（每个资产都标注 digest）；包内 `WujieFan.integrity.json`
+记录了主程序与 Core 的 sha256，启动器在每次登录自启前会比对它们。
+
+自己打包：`powershell -File tools\make-release.ps1 -Version 0.4.1`（需提权，产物在 `dist\`）。
+版本号只在仓库根的 `Directory.Build.props` 定义，脚本会校验 `-Version` 与它一致，不一致直接报错。
 
 ## 快速开始
 
