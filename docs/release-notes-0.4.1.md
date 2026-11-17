@@ -20,6 +20,14 @@
 - **版本号三处发散**。原状况：版本散落在各 `.csproj`，`WujieFan.Core` 干脆没有版本节点，元数据退回默认 `1.0.0`，与包名、主程序版本对不上。现状况：收敛到 `Directory.Build.props` 单一来源，单个 `.csproj` 不得再写 `Version`；`make-release.ps1 -Version` 必填且与 props 比对，不一致直接报错。
 - **打包可能混入陈旧 DLL**。原状况：`dotnet publish` 是合并输出，不删除上一次的残留，`dist/app` 里的旧版本 DLL 会被原样打进 zip。现状况：打包前整体清空 `dist/app`，保证产物只含本次 publish 写出的文件。
 
+## 结构性改造（原计划留给 0.6，本版本一次性完成）
+
+- 单测工程 `tests/WujieFan.Core.Tests/`，148 个 test case（84 `[Fact]` + 61 `[InlineData]` + 3 条回读路径断言），本机与 CI 均 148/148 通过。
+- `IEcTransport` / `IClock` 抽象：`FanReader` 可注入假传输，写序与回滚路径可在无硬件下断言。
+- `MainForm.cs` 从 1618 行拆到 580 行，分出 `FanModeController` / `FanPollingController` / `TrayHost` / `TitleBarChrome` / `RtssPublisher`，全部构造注入、无 DI 容器。
+- CI：`.github/workflows/ci.yml` + `tools/verify.ps1` 统一验证入口（build / test / 版本一致性 / autostart-test / XML 契约）。
+- **AIDA 写入 seqlock 已评估并否决**：布局是 XML 文本而非定宽槽位，RTSS 一次性取串不读序号；实测拆分成「清首字节→改写→写回首字节」使撕裂从 46 次/40 万读恶化到 8,803 次（191 倍）。保留单次 `Marshal.Copy`，理由与数据见 `docs/01` §14A 与 `docs/02` 文首快照。
+
 ## 文档
 
 - `docs/01` 的数字与实测对齐（入库 58 个文件、包体积按发布资产逐字节核对），并新增 §14 记录这轮审计的来源、五份分工与三条 P0 的处理方式。
@@ -31,12 +39,14 @@
 - **写 EC 的实机链路未在非管理员会话验证**。`--fanmode-live` 等回归都是在管理员会话下跑的；"普通用户误启动会怎样"没有实机结论。验收手册见 `docs/03-实机验收手册.md`。
 - **签名校验未实现**。当前的 SHA-256 清单与 exe 放在同一个可写目录，能被替换 exe 的人一起替换；它只"检测"不"防御"，属提高成本而非消除路径。彻底修复需要 Authenticode 签名或受保护安装目录，两者都不在本版本范围内，也**没有保留一个默认关闭的分支**。
 - **安装目录可写这个提权根因未解决**。"解压即用"意味着普通用户可写程序所在目录，替换 `WujieFan.exe` 后等下次登录即可。该问题的正解（安装到 `Program Files`）与"不改用户电脑配置"的约定冲突，留待单独决策。
-- **0.6 的结构性改造已在本版本一并完成**（原计划留到 0.6）：
-  - 单测工程 `tests/WujieFan.Core.Tests/`，148 个 test case（84 `[Fact]` + 61 `[InlineData]` + 新增 3 条回读路径断言），全绿。
-  - `IEcTransport` / `IClock` 抽象：`FanReader` 可注入假传输，写序与回滚路径可在无硬件下断言。
-  - `MainForm.cs` 从 1618 行拆到 580 行，分出 `FanModeController` / `FanPollingController` / `TrayHost` / `TitleBarChrome` / `RtssPublisher`，全部构造注入、无 DI 容器。
-  - CI：`.github/workflows/ci.yml` + `tools/verify.ps1` 统一验证入口（build / test / 版本一致性 / autostart-test / XML 契约）。
-  - **AIDA 写入 seqlock 已评估并否决**：布局是 XML 文本而非定宽槽位，RTSS 一次性取串不读序号；实测拆分成「清首字节→改写→写回首字节」使撕裂从 46 次/40 万读恶化到 8,803 次（191 倍）。保留单次 `Marshal.Copy`，理由与数据见 `docs/02` 文首快照。
 - **过热看门狗的两条判据没有自动化断言**：判据实现位于 `src/WujieFan/Ui/FanModeController.cs`（UI 项目、依赖 WinForms），而测试工程只引用 Core，故「92℃ 连续 3 次」与「读失败 3 次且 ≥2s」无法在无 UI 环境下断言。这是分层边界，非遗漏。
-- **CI 尚未在 GitHub Actions 上实跑**：workflow 与 `verify.ps1` 各步骤已在本机以 pwsh 7.6.9 / PS 5.1 做过 AST 解析与退出码桩测，`verify.ps1 -SkipBuild -FailOnSkip` 本机退出码 0，但"CI 跑绿"要等首次 push 后才有结论。
+- ~~CI 尚未在 GitHub Actions 上实跑~~ → **已实跑通过**（2026-11-17，run `44088236762`）：guard job 13s、build+test+smoke job 1m11s，两个 job 均 success，构建 0 警告、单测 148/148、版本三项一致；其后两次 push 的 CI 同样 success。
 - **写 EC 的实机链路仍需管理员会话重跑**：见上方第一条与 `docs/03-实机验收手册.md`。
+
+## 发布
+
+- tag `v0.4.1` → 提交 `1bcd514`（最后一个代码提交；本文件与文档订正提交在其后，不改动二进制内容）。
+- Release：https://github.com/Thousand00/wujiefan/releases/tag/v0.4.1
+- `WujieFan-0.4.1-win-x64.zip` 265,971 B，sha256 `a50682ec…cb52`，18 entries；
+  `WujieFan-0.4.1-win-x64-portable.zip` 98,333,625 B，sha256 `ca3e176a…1683`，11 entries。
+  GitHub 侧记录的 digest 与本地逐字节一致；两个包内的 `WujieFan.integrity.json` 与包内文件 sha256/length 逐一相符。
