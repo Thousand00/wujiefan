@@ -866,14 +866,16 @@ internal static class Program
 
     private static int RunXmlOnly()
     {
+        // 刻意用一眼可辨的合成值, 而不是真实读数量级: 本命令不访问硬件, 但输出会进 CI 日志,
+        // 若写成 3433/3032/65 这种真实量级, 读日志的人会误以为它验证了硬件读数。
         var snap = new FanSnapshot
         {
             Fans = new[]
             {
-                new FanEntry { Id = "FAN1", Label = "Fan1 (CPU)", ValueText = "3433" },
-                new FanEntry { Id = "FAN2", Label = "Fan2 (GPU)", ValueText = "3032" },
+                new FanEntry { Id = "FAN1", Label = "Fan1 (CPU)", ValueText = "1111" },
+                new FanEntry { Id = "FAN2", Label = "Fan2 (GPU)", ValueText = "2222" },
             },
-            Temperature = 65,
+            Temperature = 33,
         };
         string xml = AidaSharedMemory.BuildXml(snap);
         Console.WriteLine(xml);
