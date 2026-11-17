@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      与 Core 保持同一 TFM: Core 是 net8.0-windows (用 Microsoft.Win32.Registry),
+      测试工程跟随, 免得 net8.0 引用 net8.0-windows 时出现平台兼容性告警。
+      PlatformTarget 必须跟着 Core 的 x64 —— Core 声明了 <Platforms>x64</Platforms>,
+      测试工程用 AnyCPU 会触发 NU1701/MSB3277 一类的平台不匹配问题。
+    -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>WujieFan.Core.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\WujieFan.Core\WujieFan.Core.csproj" />
+  </ItemGroup>
+
+</Project>

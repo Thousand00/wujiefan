@@ -14,9 +14,11 @@ namespace WujieFan.Core.Ec;
 /// 无输出的函数必须按 out_size=0 调用。传 out_size=1 时驱动不写缓冲区,
 /// 读到的会是残留内存 —— 曾把 "ioctl_se" 字符串解释成返回值 7310291539566227305。
 ///
-/// 这里只做读取。写 EC 寄存器会改变风扇/电源行为, 超出本程序职责。
+/// 读和写都在这里: 写是危险操作, 但强冷模式离不开它 (见 <see cref="Write"/>)。
+/// 它是 <see cref="IEcTransport"/> 的硬件实现, 测试用的假 EC 实现同一个接口,
+/// 这样 <see cref="FanReader"/> 的写序列不需要真硬件就能被断言。
 /// </summary>
-public sealed class EcAccess : IDisposable
+public sealed class EcAccess : IEcTransport, IDisposable
 {
     private readonly PawnIo _io;
     private bool _moduleLoaded;
@@ -118,13 +120,9 @@ public sealed class EcAccess : IDisposable
     /// <exception cref="EcException">值不在 [PwmMin, PwmMax] 区间内。</exception>
     public void WritePwm(ushort address, int value)
     {
-        if (value < EcRegisters.PwmMin || value > EcRegisters.PwmMax)
-        {
-            throw new EcException(
-                $"拒绝写入 PWM 值 {value}: 有效区间是 {EcRegisters.PwmMin}..{EcRegisters.PwmMax} " +
-                $"(地址 0x{address:X4})。超过 {EcRegisters.PwmMax} 会让风扇停转。");
-        }
-
+        // 判定与文案都放在 PwmGuard 里, 与 IEcTransport 的默认实现共用同一份,
+        // 免得两条路径的检查悄悄漂移 (一边拒绝 185、另一边放行)。
+        PwmGuard.Validate(address, value);
         Write(address, (byte)value);
     }
 

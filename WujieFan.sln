@@ -15,6 +15,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{827E0CD3-B72
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WujieFan.Launcher", "src\WujieFan.Launcher\WujieFan.Launcher.csproj", "{0C074C96-E46F-4F68-8E44-778B7B786212}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WujieFan.Core.Tests", "tests\WujieFan.Core.Tests\WujieFan.Core.Tests.csproj", "{7C0BAF4B-26F4-486F-A34A-ACA0330E9539}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -85,6 +87,18 @@ Global
 		{0C074C96-E46F-4F68-8E44-778B7B786212}.Release|Any CPU.Build.0 = Release|Any CPU
 		{0C074C96-E46F-4F68-8E44-778B7B786212}.Release|x86.ActiveCfg = Release|Any CPU
 		{0C074C96-E46F-4F68-8E44-778B7B786212}.Release|x86.Build.0 = Release|Any CPU
+		{7C0BAF4B-26F4-486F-A34A-ACA0330E9539}.Debug|x64.ActiveCfg = Debug|x64
+		{7C0BAF4B-26F4-486F-A34A-ACA0330E9539}.Debug|x64.Build.0 = Debug|x64
+		{7C0BAF4B-26F4-486F-A34A-ACA0330E9539}.Debug|Any CPU.ActiveCfg = Debug|x64
+		{7C0BAF4B-26F4-486F-A34A-ACA0330E9539}.Debug|Any CPU.Build.0 = Debug|x64
+		{7C0BAF4B-26F4-486F-A34A-ACA0330E9539}.Debug|x86.ActiveCfg = Debug|x64
+		{7C0BAF4B-26F4-486F-A34A-ACA0330E9539}.Debug|x86.Build.0 = Debug|x64
+		{7C0BAF4B-26F4-486F-A34A-ACA0330E9539}.Release|x64.ActiveCfg = Release|x64
+		{7C0BAF4B-26F4-486F-A34A-ACA0330E9539}.Release|x64.Build.0 = Release|x64
+		{7C0BAF4B-26F4-486F-A34A-ACA0330E9539}.Release|Any CPU.ActiveCfg = Release|x64
+		{7C0BAF4B-26F4-486F-A34A-ACA0330E9539}.Release|Any CPU.Build.0 = Release|x64
+		{7C0BAF4B-26F4-486F-A34A-ACA0330E9539}.Release|x86.ActiveCfg = Release|x64
+		{7C0BAF4B-26F4-486F-A34A-ACA0330E9539}.Release|x86.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -92,5 +106,6 @@ Global
 	GlobalSection(NestedProjects) = preSolution
 		{C1D224D5-D665-4A32-B0AA-7FAAC594B933} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{0C074C96-E46F-4F68-8E44-778B7B786212} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{7C0BAF4B-26F4-486F-A34A-ACA0330E9539} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

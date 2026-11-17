@@ -14,9 +14,10 @@ namespace WujieFan.Core.Ec;
 /// </summary>
 public sealed class FanReader : IDisposable
 {
-    private readonly byte[] _lpcIoBlob;
+    private readonly byte[]? _lpcIoBlob;
+    private readonly IClock _clock;
     private PawnIo? _io;
-    private EcAccess? _ec;
+    private IEcTransport? _ec;
     private EcMutex? _mutex;
     private bool _disposed;
 
@@ -45,11 +46,37 @@ public sealed class FanReader : IDisposable
 
     /// <summary>硬件校验结果。未通过时 Open() 会抛 HardwareNotSupportedException。</summary>
     public SupportVerdict? Verdict { get; private set; }
-    public ushort PortBase => _ec?.PortBase ?? 0;
-    public int Slot => _ec?.Slot ?? -1;
+
+    /// <summary>端口基址。仅在真实硬件路径下有意义, 注入传输时恒为 0。</summary>
+    public ushort PortBase => (_ec as EcAccess)?.PortBase ?? 0;
+
+    /// <summary>I2EC 槽位。仅在真实硬件路径下有意义, 注入传输时恒为 -1。</summary>
+    public int Slot => (_ec as EcAccess)?.Slot ?? -1;
 
     /// <param name="lpcIoBlob">LpcIO.bin 的字节内容 (LGPL 2.1, 随程序分发)。</param>
-    public FanReader(byte[] lpcIoBlob) => _lpcIoBlob = lpcIoBlob;
+    public FanReader(byte[] lpcIoBlob) : this(lpcIoBlob, SystemClock.Instance) { }
+
+    /// <summary>
+    /// 走真硬件的构造。行为与抽取传输层之前完全一致。
+    /// </summary>
+    public FanReader(byte[] lpcIoBlob, IClock clock)
+    {
+        _lpcIoBlob = lpcIoBlob;
+        _clock = clock;
+    }
+
+    /// <summary>
+    /// 注入现成传输层的构造。**用于测试**: 传进来的假 EC 已经"打开", 因此
+    /// <see cref="Open"/> 变成空操作, 也不会有 PawnIo / 互斥量 / 机型校验参与。
+    ///
+    /// 这样 <see cref="SetMode"/> 的写序列 (先 PWM 后标志、失败回滚的顺序) 可以在
+    /// 没有 EC 硬件的机器上被逐条断言 —— 而这些顺序恰恰是上机肉眼验不出来的。
+    /// </summary>
+    public FanReader(IEcTransport transport, IClock? clock = null)
+    {
+        _ec = transport;
+        _clock = clock ?? SystemClock.Instance;
+    }
 
     /// <summary>
     /// 打开设备并探测端口。失败会抛出带可读说明的异常。
@@ -78,13 +105,18 @@ public sealed class FanReader : IDisposable
 
         try
         {
-            _ec = new EcAccess(_io);
-            _ec.LoadModule(_lpcIoBlob);
+            var ec = new EcAccess(_io);
+            if (_lpcIoBlob is null)
+                throw new InvalidOperationException("LpcIO.bin 未提供, 无法加载 EC 访问模块。");
+            ec.LoadModule(_lpcIoBlob);
 
             // 端口探测要反复读寄存器, 这段必须持锁。
             _mutex.Acquire(MutexTimeoutMs);
-            try { _ec.DetectPort(); }
+            try { ec.DetectPort(); }
             finally { _mutex.Release(); }
+
+            // 探测成功后才挂上, 避免半初始化的 EcAccess 被 Read() 用到。
+            _ec = ec;
         }
         catch
         {
@@ -101,7 +133,7 @@ public sealed class FanReader : IDisposable
     public FanSample Read()
     {
         if (_ec is null)
-            return new FanSample { Timestamp = DateTime.Now, Error = "设备未打开" };
+            return new FanSample { Timestamp = _clock.Now, Error = "设备未打开" };
 
         try
         {
@@ -129,7 +161,7 @@ public sealed class FanReader : IDisposable
 
             return new FanSample
             {
-                Timestamp = DateTime.Now,
+                Timestamp = _clock.Now,
                 Temperature = temp,
                 Fans = fans,
                 Mode = mode,
@@ -137,7 +169,7 @@ public sealed class FanReader : IDisposable
         }
         catch (Exception ex)
         {
-            return new FanSample { Timestamp = DateTime.Now, Error = ex.Message };
+            return new FanSample { Timestamp = _clock.Now, Error = ex.Message };
         }
     }
 
@@ -227,7 +259,25 @@ public sealed class FanReader : IDisposable
 
             // 回读确认。写完不看一眼就等于赌 EC 收下了 ——
             // 之前踩过"界面说切换成功、EC 里其实还是旧值"的坑, 这里必须核对。
-            FanModeState actual = ReadModeStateLocked();
+            //
+            // 回读单独 try: 走到这里说明四个写入全部成功, 只有"看一眼"这一下失败了。
+            // 这时有两种错误做法, 都必须避免:
+            //   报成普通失败 —— 用户以为没生效, 实际风扇已经在按新模式转;
+            //   回滚 —— 把用户刚要的强冷又撤掉, 等于违背指令。
+            // 真实的语义是"写完了, 但无法确认现在是什么模式", 确定性恰恰是未知的。
+            FanModeState actual;
+            try
+            {
+                actual = ReadModeStateLocked();
+            }
+            catch (Exception readEx)
+            {
+                string what = mode == FanMode.StrongCool ? "强冷" : "自动";
+                return FanModeResult.Failure(
+                    $"已向 EC 写入切换到{what}模式的指令, 但回读确认失败: {readEx.Message} " +
+                    "写入可能已经生效, 风扇也许已在按新模式转动 —— 请查看当前转速与温度确认实际状态。",
+                    FanModeState.Unknown, indeterminate: true);
+            }
 
             // 回读到 Mixed 说明两个风扇的标志不一致, 正是"分裂残留"的样子,
             // 属于不确定状态, 要区别于普通的"EC 没接受"。
@@ -335,7 +385,7 @@ public sealed class FanReader : IDisposable
     /// <summary>写入前四个寄存器 (两个手动 PWM、两个模式标志) 的取值。</summary>
     private readonly record struct ModeSnapshot(int Pwm1, int Pwm2, int Flag1, int Flag2)
     {
-        public static ModeSnapshot Capture(EcAccess ec) => new(
+        public static ModeSnapshot Capture(IEcTransport ec) => new(
             ec.Read(EcRegisters.ManualPwm1),
             ec.Read(EcRegisters.ManualPwm2),
             ec.Read(EcRegisters.ModeFlag1),
@@ -374,7 +424,11 @@ public sealed class FanReader : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        _ec?.Dispose();
+
+        // IEcTransport 不继承 IDisposable: 接口只留 FanReader 真正用到的三个操作,
+        // 免得每个假实现都要写一个空 Dispose。真实现 (EcAccess) 仍是 IDisposable,
+        // 这里按需转型释放; 注入的测试传输没有可释放资源时转型为 null 也无害。
+        (_ec as IDisposable)?.Dispose();
         _ec = null;
         _io?.Dispose();
         _io = null;

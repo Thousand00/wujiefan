@@ -1,0 +1,150 @@
+name: CI
+
+# 每次 push / PR 都跑：构建 + 单测 + 免管理员的回归 + 版本一致性。
+# 真正的检查逻辑全部在 tools/verify.ps1 里，本文件只负责触发与传参，
+# 避免同一套命令在 yaml 和脚本里各写一遍后逐渐漂移。
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: build + test + smoke
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    env:
+      DOTNET_NOLOGO: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
+      # verify.ps1 也会设，这里再设一次保证 restore 阶段就是英文输出
+      DOTNET_CLI_UI_LANGUAGE: 'en'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Show SDK info
+        run: |
+          dotnet --version
+          dotnet --list-sdks
+
+      - name: Restore
+        run: dotnet restore WujieFan.sln
+
+      # -FailOnSkip：在 runner 上任何"环境缺失跳过"都必须变红。
+      # 这是本仓库唯一需要的 CI 开关——没有这块主板的检查就该报错，
+      # 而不是在 CI 里悄悄变绿（--checkhw 之类）。
+      - name: Verify (build + test + smoke)
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File tools/verify.ps1 -FailOnSkip
+          $code = $LASTEXITCODE
+          Write-Host "verify.ps1 exit code: $code"
+          if ($code -ne 0) {
+            Write-Host "::error::tools/verify.ps1 failed with exit code $code"
+            exit $code
+          }
+          exit 0
+
+      # 失败时把测试日志传出来，方便看是断言失败还是环境问题
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: |
+            tests/**/TestResults/**
+            **/*.trx
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # 明确记录本仓库的 CI 边界：以下链路会写 EC 或注册计划任务，
+  # 只能在真实机器上人工执行（见 docs/03-实机验收手册.md），
+  # 任何在 CI 里调用它们的改动都应被视为缺陷。
+  #   --fanmode-live      真写 EC 风扇控制寄存器
+  #   --autostart-live    真注册/删除开机自启计划任务
+  #   --autostart-cn      真注册中文用户名下的计划任务
+  #   --autostart-upgrade 改计划任务指向的路径
+  #   --checkhw           退出码依赖机型（本机=0，runner=1），不可作门禁
+  guard-forbidden-args:
+    name: guard (no hardware-writing args in CI)
+    runs-on: windows-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reject hardware-writing args in CI config
+        shell: pwsh
+        run: |
+          # 只抓"真的作为参数传给某个命令"的形态，避免误伤说明文字与白名单定义本身：
+          #   dotnet run --project ... -- --fanmode-live
+          #   dotnet <path>\EcReadSmoke.dll --checkhw
+          # 块注释与行注释整体跳过。
+          $forbidden = @('--fanmode-live', '--autostart-live', '--autostart-cn', '--autostart-upgrade', '--checkhw')
+          $targets = @('.github/workflows/ci.yml', 'tools/verify.ps1')
+          $bad = @()
+
+          foreach ($t in $targets) {
+            if (-not (Test-Path $t)) { continue }
+
+            $lines = Get-Content $t
+            $inBlockComment = $false
+
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+              $line = $lines[$i]
+              $no = $i + 1
+
+              # 跟踪 <# ... #> 块注释（verify.ps1 的说明段落里就写着这些参数名）
+              if ($inBlockComment) {
+                if ($line -match '#>') { $inBlockComment = $false }
+                continue
+              }
+              if ($line -match '^\s*<#') {
+                if (-not ($line -match '#>')) { $inBlockComment = $true }
+                continue
+              }
+
+              # 行注释、空白行
+              if ($line -match '^\s*#') { continue }
+              if ([string]::IsNullOrWhiteSpace($line)) { continue }
+
+              # 白名单定义行与其中使用的 $f / Escape 片段，不是调用
+              if ($line -match '\$forbidden\s*=') { continue }
+              if ($line -match 'Escape\(\$f\)') { continue }
+
+              # 必须是调用形态：出现 dotnet / EcReadSmoke / pwsh -File
+              $isInvocation = $line -match '(?i)\bdotnet\s' -or $line -match 'EcReadSmoke' -or $line -match '(?i)\bpwsh\b'
+              if (-not $isInvocation) { continue }
+
+              foreach ($f in $forbidden) {
+                if ($line -match ([regex]::Escape($f))) {
+                  $bad += "${t}:${no}  $($line.Trim())"
+                }
+              }
+            }
+          }
+
+          if ($bad.Count -gt 0) {
+            foreach ($b in $bad) { Write-Host "::error::$b" }
+            throw "CI 里出现了会写 EC / 注册计划任务的参数，必须移除。"
+          }
+          Write-Host "OK: CI 配置未调用任何硬件写入参数。"
