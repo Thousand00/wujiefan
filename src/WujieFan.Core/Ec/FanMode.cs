@@ -39,9 +39,21 @@ public sealed class FanModeResult
     public string Message { get; init; } = "";
     public FanModeState State { get; init; } = FanModeState.Unknown;
 
+    /// <summary>
+    /// 风扇可能处于**不确定状态**: 切换失败, 而且连"回滚到自动"也没有成功。
+    ///
+    /// 这是比普通失败严重得多的情形 —— 可能一个风扇手动满转、另一个交还给了 EC,
+    /// 也可能标志根本没生效、EC 仍在读某个残留的手动 PWM 值。上层必须显著提示用户
+    /// (而不只是写日志), 并引导其检查温度 / 重启程序 / 手动切回自动。
+    ///
+    /// 普通失败 (例如 EC 被别的软件占用、根本没写进去) 时为 false。
+    /// </summary>
+    public bool Indeterminate { get; init; }
+
     public static FanModeResult Success(string message, FanModeState state) =>
         new() { Ok = true, Message = message, State = state };
 
-    public static FanModeResult Failure(string message, FanModeState state = FanModeState.Unknown) =>
-        new() { Ok = false, Message = message, State = state };
+    public static FanModeResult Failure(string message, FanModeState state = FanModeState.Unknown,
+                                        bool indeterminate = false) =>
+        new() { Ok = false, Message = message, State = state, Indeterminate = indeterminate };
 }

@@ -42,7 +42,15 @@ public sealed class EcMutex : IDisposable
     }
 
     /// <summary>
-    /// 获取全部互斥量。返回是否全部成功 (部分成功也会持有已拿到的, 由 Release 统一归还)。
+    /// 获取全部互斥量。只有**全部拿到**才返回 true。
+    ///
+    /// 部分成功 (拿到了其中一把、另一把超时) 时, 已经把到手的那些原样还回去,
+    /// 然后返回 false —— 调用方看到 false 就可以放心走失败分支, 不需要再 Release。
+    ///
+    /// 这一点至关重要: 早先的实现留着部分持有的句柄返回 false, 调用方据此跳过 Release,
+    /// 结果 Global\Access_ISABUS 被本进程长期占住, HWiNFO / LHM 再也读不到 EC;
+    /// 更糟的是 _owned 里留着句柄, 下一次 Acquire 会因为"已持有"而跳过 Wait,
+    /// 让本实例此后永远以为自己拿着锁。
     ///
     /// 调用方应当在**每次 I2EC 访问前后**成对调用 Acquire/Release, 而不是一直持锁:
     /// 一把锁被某个进程长期占住, HWiNFO / LibreHardwareMonitor 这些同样守约定的软件
@@ -54,7 +62,6 @@ public sealed class EcMutex : IDisposable
 
         if (!EnsureHandles()) return false;
 
-        bool all = true;
         foreach (IntPtr h in _handles)
         {
             // 已持有的不重复 Wait: 同一线程对同一互斥量再次 Wait 是重入计数,
@@ -63,12 +70,17 @@ public sealed class EcMutex : IDisposable
 
             uint wait = WaitForSingleObject(h, (uint)timeoutMs);
             if (wait is 0 or 0x80)   // WAIT_OBJECT_0 / WAIT_ABANDONED
+            {
                 _owned.Add(h);
-            else
-                all = false;
+                continue;
+            }
+
+            // 拿不全就一把都不留, 避免"半持有"这种既锁不住别人、又占着锁的状态。
+            Release();
+            return false;
         }
 
-        return all;
+        return true;
     }
 
     /// <summary>释放本次 Acquire 拿到的锁。可以安全地重复调用。</summary>

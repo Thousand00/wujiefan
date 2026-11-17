@@ -16,6 +16,9 @@ work/
 *.log
 !docs/archive/**/*.log
 
+# AgentTeams 团队运行的本地状态（任务板/信箱，不应入库）
+.agent-teams/
+
 # 编辑器与备份文件
 *.user
 *.suo

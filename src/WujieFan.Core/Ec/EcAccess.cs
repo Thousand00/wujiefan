@@ -88,17 +88,44 @@ public sealed class EcAccess : IDisposable
     // ---------------------------------------------------------------- 对外
 
     /// <summary>
-    /// 写 EC 地址空间的一个字节。
+    /// 写 EC 地址空间的一个字节。**不做任何范围校验** —— 校验是调用方的事,
+    /// 本方法只负责 I2EC 时序, 它是通用 IO 通道, 任何地址都可能被写。
     ///
     /// 这是**危险操作**: 写错地址可能改变风扇/电源/充电行为, 甚至让机器过热。
-    /// 生产程序 (WujieFan) 不调用本方法; 只有经过显式确认的实验工具才会用到。
+    /// 生产程序确实在用 (FanReader.SetMode 切换强冷/自动), 但只碰
+    /// ManualPwm1/2 与 ModeFlag1/2 四个地址; 其余地址只有经过显式确认的实验工具才会写。
     /// 调用方必须保证: 写完能恢复原值, 且有独立的温控看门狗兜底。
+    /// PWM 占空比一律走 <see cref="WritePwm"/>, 它会拒绝越界值。
     /// </summary>
     public void Write(ushort address, byte value)
     {
         Select(0x10); Commit((byte)(address & 0xFF));
         Select(0x11); Commit((byte)(address >> 8));
         Select(0x12); Commit(value);
+    }
+
+    /// <summary>
+    /// 写一个 PWM 占空比寄存器。**这是 PWM 的唯一合法写入入口。**
+    ///
+    /// 有效区间是 [0, <see cref="EcRegisters.PwmMax"/>] (0..184, 184 = 100%)。
+    /// 超过 184 会让风扇直接停转 (实测 200/220/240/255 全部 RPM=0), 而且是
+    /// 静默停转 —— 没有告警, 只有温度慢慢爬上去。所以越界一律抛异常,
+    /// **不做静默夹取**: 夹取会把调用方的计算错误藏起来, 让"程序觉得在 184,
+    /// 实际写进去的是别的值"这种 bug 活到用户机器上。
+    ///
+    /// 0 是合法值 (EC 允许停转), 这里不拒绝; 是否需要阻止停转由上层策略决定。
+    /// </summary>
+    /// <exception cref="EcException">值不在 [PwmMin, PwmMax] 区间内。</exception>
+    public void WritePwm(ushort address, int value)
+    {
+        if (value < EcRegisters.PwmMin || value > EcRegisters.PwmMax)
+        {
+            throw new EcException(
+                $"拒绝写入 PWM 值 {value}: 有效区间是 {EcRegisters.PwmMin}..{EcRegisters.PwmMax} " +
+                $"(地址 0x{address:X4})。超过 {EcRegisters.PwmMax} 会让风扇停转。");
+        }
+
+        Write(address, (byte)value);
     }
 
     /// <summary>读 EC 地址空间的一个字节。</summary>

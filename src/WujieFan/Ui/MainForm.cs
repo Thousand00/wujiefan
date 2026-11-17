@@ -66,6 +66,53 @@ public sealed class MainForm : Form
     /// <summary>已经因过热自动交还过 EC, 本轮不再重复弹提示。</summary>
     private bool _emergencyRestored;
 
+    /// <summary>
+    /// 本会话是否仍持有"强冷"意图 —— 由用户操作或启动归一化确认, 与 EC 回读的实时模式无关。
+    ///
+    /// 看门狗必须按意图判断, 不能按回读判断: 它要防的正是「EC 里的标志已被外部改回自动、
+    /// 而用户仍以为强冷在生效」这类情况。若用回读当判据, 一旦看到不是强冷就先清零返回,
+    /// 恰好把要防的那个场景排除掉了 —— 保护会在最需要它的时候失效。
+    /// </summary>
+    private bool _strongCoolIntent;
+
+    /// <summary>强冷意图期间连续读失败的采样数, 达到阈值就主动交还自动。</summary>
+    private int _readFailSamples;
+
+    /// <summary>本轮连续读失败的起点, 给阈值加一条最短持续时间, 防止轮询间隔很短时误判。</summary>
+    private DateTime _firstReadFailAt;
+
+    /// <summary>模式被外部改掉的告警只发一次, 避免每秒刷屏; 模式回到强冷或意图清除后复位。</summary>
+    private bool _modeDiverged;
+
+    /// <summary>
+    /// 强冷期间连续读失败几次就交还自动。取 3: 默认 1 秒轮询下约 3 秒。
+    /// 单次失败是正常的 (与 HWiNFO / LHM 抢 EC 互斥量、一次 16 位读抖动),
+    /// 连续 3 次则说明 EC 通路已经坏了 —— 这时我们既确认不了温度也确认不了模式,
+    /// 继续把手动满转留在机器上是不负责任的。
+    /// </summary>
+    private const int ReadFailRestoreSamples = 3;
+
+    /// <summary>
+    /// 交还自动前要求读失败至少持续这么久。轮询间隔可配到 200ms, 只数次数会在
+    /// 0.6 秒内就交还, 对一次驱动重启来说太急了。
+    /// </summary>
+    private static readonly TimeSpan ReadFailMinDuration = TimeSpan.FromSeconds(2);
+
+    /// <summary>交还原因串。EmergencyRestoreAuto 用它挑选文案, 也写进日志。</summary>
+    private const string ReadFailReason = "EC 读取持续失败";
+
+    /// <summary>另一条"确认不了"的路径: EC 读得到, 但温度寄存器给不出有效值。</summary>
+    private const string TempUnknownReason = "温度读数无效";
+
+    /// <summary>强冷意图期间连续拿到无效温度的采样数, 与读失败共用阈值。</summary>
+    private int _tempUnknownSamples;
+
+    /// <summary>本轮连续无效温度的起点, 与读失败同样加一条最短持续时间。</summary>
+    private DateTime _firstTempUnknownAt;
+
+    /// <summary>托盘菜单图标: TrayIcons 现画的位图, 由本类统一持有并在 Dispose 时释放。</summary>
+    private readonly List<Image> _menuImages = new();
+
     /// <summary>上一次尝试重建 AIDA64 共享内存的刻度, 用来给重建加退避。</summary>
     private long _lastAidaTryTicks;
 
@@ -464,10 +511,44 @@ public sealed class MainForm : Form
         {
             UiLog("CreateTrayIcon FAILED: " + ex);
             // 托盘建不出来时至少要把窗口留住, 否则关掉窗口就再也找不回来了。
+            // 这里必须落盘: 只改内存的话下次启动又会按 MinimizeToTray=true 尝试缩托盘,
+            // 而托盘建不出来是环境问题 (explorer 没起来、图标资源损坏), 大概率还会失败。
             _settings.MinimizeToTray = false;
+            SaveSettingsQuietly("关闭托盘回退选项");
             _trayIcon = null;
             SetStatus("托盘图标创建失败, 已改为关窗口即退出: " + ex.Message, Theme.Warn);
         }
+    }
+
+    /// <summary>
+    /// 保存设置, 失败只写日志 —— 配置写不进去不该让程序崩掉或弹出对话框,
+    /// 但也不能假装成功: 至少要留下痕迹, 否则用户会以为选项已经记住了。
+    /// </summary>
+    private void SaveSettingsQuietly(string what)
+    {
+        // AppSettings.Save 是"失败不抛、返回 false + LastError"的契约 (原子写重试过
+        // 临时文件/替换/回退 Move 之后才放弃), 所以只 try/catch 会漏掉失败路径:
+        // 返回值 false 时什么都不会发生, 而调用方以为已经落盘了。
+        try
+        {
+            if (_settings.Save()) return;
+            UiLog($"保存设置失败 ({what}): {AppSettings.LastError ?? "未知原因"}");
+        }
+        catch (Exception ex)
+        {
+            UiLog($"保存设置失败 ({what}): {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 记住菜单图标, 退出时统一释放。TrayIcons 每次调用都现画一张 Bitmap,
+    /// ToolStripMenuItem 不会替你接管它的生命周期, 而托盘菜单要到进程结束才销毁。
+    /// 数量固定且很小 (4 张 16px), 但既然建了就明确释放, 免得留下"谁负责"的模糊地带。
+    /// </summary>
+    private Image TrackMenuImage(Image image)
+    {
+        _menuImages.Add(image);
+        return image;
     }
 
     private ContextMenuStrip BuildTrayMenu()
@@ -481,16 +562,16 @@ public sealed class MainForm : Form
             ShowImageMargin = true,
         };
 
-        menu.Items.Add(new ToolStripMenuItem("显示主窗口", TrayIcons.Show(16), (_, _) => RestoreFromTray()));
+        menu.Items.Add(new ToolStripMenuItem("显示主窗口", TrackMenuImage(TrayIcons.Show(16)), (_, _) => RestoreFromTray()));
 
         // 逃生口: 不论程序内部状态如何, 点一下就把 EC 交还自动。
         // 面板上那个勾选框万一因为界面卡住点不动, 这里是最后一条路。
-        menu.Items.Add(new ToolStripMenuItem("恢复自动风扇", TrayIcons.Restore(16), (_, _) => EmergencyRestoreAuto("托盘菜单")));
-        menu.Items.Add(new ToolStripMenuItem("重新检测机型", TrayIcons.Rescan(16), (_, _) => RetryHardwareCheck()));
+        menu.Items.Add(new ToolStripMenuItem("恢复自动风扇", TrackMenuImage(TrayIcons.Restore(16)), (_, _) => EmergencyRestoreAuto("托盘菜单")));
+        menu.Items.Add(new ToolStripMenuItem("重新检测机型", TrackMenuImage(TrayIcons.Rescan(16)), (_, _) => RetryHardwareCheck()));
         var sep = new ToolStripSeparator { Margin = new Padding(8, 4, 8, 4) };
         menu.Items.Add(sep);
 
-        var exitItem = new ToolStripMenuItem("退出 WujieFan", TrayIcons.Exit(16), (_, _) => ExitApplication());
+        var exitItem = new ToolStripMenuItem("退出 WujieFan", TrackMenuImage(TrayIcons.Exit(16)), (_, _) => ExitApplication());
         exitItem.ForeColor = Theme.Err;
         menu.Items.Add(exitItem);
 
@@ -614,6 +695,15 @@ public sealed class MainForm : Form
         _timer.Start();
         OnTick(null, EventArgs.Empty);
 
+        // 设置降级提示放在所有初始化状态写完之后, 否则会被 OpenReader / OnTick
+        // 写的"正常"文案盖掉。用户改了设置却没生效, 必须让人看见一次。
+        if (AppSettings.LoadDegraded)
+        {
+            string why = AppSettings.LoadWarning ?? "原因未知";
+            SetStatus("设置文件已降级为安全默认 (不接管风扇): " + why, Theme.Warn);
+            UiLog("AppSettings degraded: " + why);
+        }
+
         // 开机自启动时不弹窗打扰, 直接进托盘。手动启动则正常显示窗口,
         // 用户点关闭键时再按 MinimizeToTray 决定是缩托盘还是退出。
         if (_startMinimized) HideToTray();
@@ -629,6 +719,9 @@ public sealed class MainForm : Form
     /// </summary>
     private void NormalizeFanModeOnStartup()
     {
+        // 启动时的意图由设置决定, 与接下来读到的 EC 状态无关 —— 这是看门狗的唯一授权来源。
+        _strongCoolIntent = _settings.FanMode == FanMode.StrongCool;
+
         if (_reader is null || !_reader.IsOpen)
         {
             UpdateFanModeUi(FanModeState.Unknown);
@@ -763,6 +856,12 @@ public sealed class MainForm : Form
         if (sample.Error is not null)
         {
             _consecutiveErrors++;
+
+            // 读失败也必须过看门狗。原实现这里直接 return, 下面的 CheckThermalWatchdog
+            // 永远不会执行 —— 而"EC 读不到"正是既确认不了温度、也确认不了模式的时刻,
+            // 是最需要兜底的那一种状态, 而不是可以跳过监控的状态。
+            CheckWatchdogOnReadError();
+
             if (_consecutiveErrors >= 5)
             {
                 // 连续失败多半是句柄失效, 重连一次。
@@ -778,6 +877,9 @@ public sealed class MainForm : Form
         }
 
         _consecutiveErrors = 0;
+
+        // 这一轮读到了, 失败累计归零。看门狗因而只在真正连续的失败段里累计。
+        _readFailSamples = 0;
 
         if (sample.Fans.Count >= 2)
         {
@@ -796,6 +898,21 @@ public sealed class MainForm : Form
             _suppressFanModeEvent = true;
             try { _strongCoolRow.SetCheckedSilently(sample.Mode == FanModeState.StrongCool); }
             finally { _suppressFanModeEvent = false; }
+
+            // 意图仍是强冷、EC 里却已经不是强冷: 说明被外部改掉了 (别的软件、EC 自己
+            // 或一次失败的写入)。这是必须让用户知道的状态漂移, 但不能每秒刷屏。
+            if (_strongCoolIntent && sample.Mode != FanModeState.StrongCool && !_modeDiverged)
+            {
+                _modeDiverged = true;
+                UiLog($"强冷意图仍然有效, 但 EC 实际模式是 {sample.Mode}");
+                SetStatus(
+                    "EC 里的强冷标志已被改回自动 (可能被其他软件重置), 界面已同步为真实状态。",
+                    Theme.Warn);
+            }
+            else if (sample.Mode == FanModeState.StrongCool)
+            {
+                _modeDiverged = false;
+            }
         }
 
         CheckThermalWatchdog(sample);
@@ -839,18 +956,51 @@ public sealed class MainForm : Form
     /// 这个看门狗防的是另一类意外: EC 不接受手动 PWM、或者别的软件把标志改回自动后
     /// 我们仍在界面上显示"强冷中"。
     ///
+    /// 判据是「本次会话是否仍持有强冷意图」(_strongCoolIntent), 不是 EC 回读的实时模式。
+    /// 原实现用 sample.Mode != StrongCool 就先清零返回, 恰好把上面第二个场景排除掉了:
+    /// 一旦标志被外部改掉, 回读立刻变成"不是强冷", 保护随即失效, 而那正是最危险的时刻。
+    /// 回读只用来同步界面和告警 (见 OnTick), 不参与"该不该继续监控"的判断。
+    ///
     /// 触发条件必须连续多次达到阈值: 单次尖峰 (编译、游戏加载) 不该打断用户的强冷。
     /// </summary>
     private void CheckThermalWatchdog(FanSample sample)
     {
-        // 已经交还过一次就不再反复触发, 否则每 3 秒弹一个框。
-        if (_emergencyRestored) return;
-
-        if (sample.Mode != FanModeState.StrongCool || sample.Temperature is not int t)
+        // 没有强冷意图就没有需要兜底的手动满转, 直接复位计数。
+        if (!_strongCoolIntent)
         {
             _hotSamples = 0;
             return;
         }
+
+        // 已经交还过一次就不再反复触发, 否则每 3 秒弹一个框。
+        if (_emergencyRestored) return;
+
+        if (sample.Temperature is not int t)
+        {
+            // 采样成功但温度被过滤成 null (寄存器值落在 1..100 之外): 同样确认不了温度。
+            // 这里不能保留进度 —— "连续 N 次高温"必须是真的连续, 留着旧计数会让很久
+            // 之后的一次高温读数单独引爆保护, 那是误判而不是保护。
+            _hotSamples = 0;
+
+            // 但也不能就这么算了: 读失败走的是 CheckWatchdogOnReadError, 而这条路径
+            // sample.Error 为 null, 永远到不了那里。持续读不到温度 = 无法确认是否过热,
+            // 与读失败等价, 用同一个阈值收手 (次数 + 最短持续时间, 理由见那边)。
+            if (_tempUnknownSamples == 0) _firstTempUnknownAt = DateTime.UtcNow;
+            _tempUnknownSamples++;
+
+            bool enough = _tempUnknownSamples >= ReadFailRestoreSamples
+                       && DateTime.UtcNow - _firstTempUnknownAt >= ReadFailMinDuration;
+
+            if (enough)
+            {
+                _tempUnknownSamples = 0;
+                UiLog($"看门狗: 连续 {ReadFailRestoreSamples} 次拿不到有效温度 (持续 {(DateTime.UtcNow - _firstTempUnknownAt).TotalSeconds:F1}s), 交还自动模式");
+                EmergencyRestoreAuto(TempUnknownReason);
+            }
+            return;
+        }
+
+        _tempUnknownSamples = 0;
 
         if (t < EcRegisters.EmergencyTemperatureC)
         {
@@ -866,6 +1016,39 @@ public sealed class MainForm : Form
             UiLog($"过热保护触发: {t}C 连续 {EcRegisters.EmergencyHoldSamples} 次, 交还自动模式");
             EmergencyRestoreAuto("过热保护");
         }
+    }
+
+    /// <summary>
+    /// 读失败时的看门狗: 连续 N 次读不到 EC 且持续足够久, 就主动交还自动。
+    ///
+    /// 这条分支原来直接 return, 导致读失败期间完全没有人管手动满转。EC 读不到意味着
+    /// 温度与模式都无法确认 —— 此时保留"手动满转"其实无害 (满转只会更吵), 但保留
+    /// "我们以为还在强冷"的假象有害, 而且如果之前的写入只成功了一半 (两路标志不一致),
+    /// 继续放着就可能停在一个没人验证过的状态上。所以宁可收手。
+    ///
+    /// 阈值取 3 次 / 至少 2 秒: 单次失败是正常的 (与 HWiNFO、LHM 抢 EC 互斥量,
+    /// 一次 16 位读数抖动), 连续 3 次说明通路已经坏了; 但轮询间隔可配到 200ms,
+    /// 只数次数会在 0.6 秒内就收手, 对一次驱动重启来说太急, 因此再加一条时间下限。
+    /// </summary>
+    private void CheckWatchdogOnReadError()
+    {
+        if (!_strongCoolIntent) return;
+        if (_emergencyRestored) return;
+
+        if (_readFailSamples == 0) _firstReadFailAt = DateTime.UtcNow;
+        _readFailSamples++;
+
+        bool enough = _readFailSamples >= ReadFailRestoreSamples
+                   && DateTime.UtcNow - _firstReadFailAt >= ReadFailMinDuration;
+
+        if (!enough) return;
+
+        _readFailSamples = 0;
+        UiLog($"看门狗: 连续 {ReadFailRestoreSamples} 次 EC 读取失败 (持续 {(DateTime.UtcNow - _firstReadFailAt).TotalSeconds:F1}s), 交还自动模式");
+
+        // 交还本身会写 EC, 这又是一次可能失败的操作 —— 但它的失败是可接受的:
+        // EmergencyRestoreAuto 内部已经先落盘设置再动硬件, 即便写失败, 下次启动也不会再拉满。
+        EmergencyRestoreAuto(ReadFailReason);
     }
 
     private static string FormatRpm(FanReading f)
@@ -951,7 +1134,14 @@ public sealed class MainForm : Form
     /// 也改回 Auto, 否则下次启动的归一化会把风扇又拉满。
     /// </summary>
     private void EmergencyRestoreAuto(string why)
-{
+    {
+        // 意图先撤: 后面无论硬件写成功还是失败, 我们都已经不再主张"强冷中"。
+        // 否则看门狗会拿一条已经放弃的意图继续累计, 反复触发交还。
+        _strongCoolIntent = false;
+        _readFailSamples = 0;
+        _tempUnknownSamples = 0;
+        _modeDiverged = false;
+
         // 先改设置再动硬件: 万一 SetMode 抛异常, 至少下次启动不会再拉满。
         _settings.FanMode = FanMode.Auto;
         _settings.Save();
@@ -966,6 +1156,23 @@ public sealed class MainForm : Form
             if (!r.Ok)
             {
                 UiLog("EmergencyRestoreAuto (" + why + ") FAILED: " + r.Message);
+
+                // 连"回滚到自动"都失败: 我们不能假装已经恢复。徽章改为"未知",
+                // 并且复用 _emergencyRestored 把看门狗按住, 不要每轮再叠一次写。
+                if (r.Indeterminate)
+                {
+                    UiLog("EmergencyRestoreAuto INDETERMINATE: " + r.Message);
+                    _emergencyRestored = true;
+                    UpdateFanModeUi(FanModeState.Unknown);
+                    SetStatus(r.Message, Theme.Err);
+
+                    // 读失败触发时 EC 本来就通不了, 这时弹模态框只会把界面锁死在
+                    // 每秒一次失败的循环里; 状态栏的红色错误已经足够醒目。
+                    if (why != ReadFailReason && why != TempUnknownReason && why != "程序退出")
+                        DarkDialog.Show(this, "风扇状态不确定", r.Message, DarkDialog.Tone.Error);
+                    return;
+                }
+
                 SetStatus("恢复自动风扇失败: " + r.Message, Theme.Err);
                 return;
             }
@@ -988,6 +1195,23 @@ public sealed class MainForm : Form
         else if (why == "程序退出")
         {
             // 用户正要退出, 不需要再告诉他什么。
+        }
+        else if (why == ReadFailReason)
+        {
+            // 读失败可能每轮都发生, 绝不能弹模态框 —— 否则会变成每秒一个对话框,
+            // 用户连点确定都来不及。只走状态栏 + 日志, 让人知道保护动作发生过。
+            _emergencyRestored = true;
+            SetStatus(
+                $"连续 {ReadFailRestoreSamples} 次读不到 EC, 已把风扇交还自动控制 (无法确认温度时不再保持手动满转)。",
+                Theme.Warn);
+        }
+        else if (why == TempUnknownReason)
+        {
+            // 同属"周期性触发"的一类, 理由同上一分支: 只写状态栏, 不弹框。
+            _emergencyRestored = true;
+            SetStatus(
+                $"连续 {ReadFailRestoreSamples} 次拿不到有效温度, 已把风扇交还自动控制 (无法确认温度时不再保持手动满转)。",
+                Theme.Warn);
         }
         else
         {
@@ -1037,6 +1261,13 @@ public sealed class MainForm : Form
 
             if (result.Ok)
             {
+                // 只在这里建立意图: 硬件确实接受了, 我们才主张"强冷在跑"。
+                // 失败分支不建立, 否则看门狗会守着一个从未生效的模式。
+                _strongCoolIntent = mode == FanMode.StrongCool;
+                _readFailSamples = 0;
+                _tempUnknownSamples = 0;
+                _modeDiverged = false;
+
                 if (mode == FanMode.StrongCool)
                 {
                     // 重新进入强冷, 让看门狗重新有机会工作。
@@ -1051,12 +1282,46 @@ public sealed class MainForm : Form
             }
             else
             {
-                SetStatus(result.Message, Theme.Warn);
+                // 硬件没接受, 意图跟着撤销: 界面和看门狗都不能停在"已强冷"上。
+                _strongCoolIntent = false;
+                _hotSamples = 0;
+                _readFailSamples = 0;
+                _tempUnknownSamples = 0;
 
-                if (userInitiated)
+                // 不确定状态: 切换失败且回滚也失败, 两个风扇可能各停在一个模式上,
+                // 我们也不知道寄存器里到底是什么。这比普通失败严重一个量级, 必须
+                // 用最醒目的语义色, 且绝不能顺手把界面画成"已自动" —— 那是最坏的谎。
+                if (result.Indeterminate)
                 {
-                    DarkDialog.Show(this, "风扇模式切换失败", result.Message, DarkDialog.Tone.Error);
-                    RevertFanModeCheck();
+                    UiLog("SetMode INDETERMINATE: " + result.Message);
+
+                    // 徽章只能如实说"不知道", 让 Unknown 分支清空断言。
+                    UpdateFanModeUi(FanModeState.Unknown);
+
+                    // 勾选框也不能停在"开": 我们已经撤销了意图, 再显示勾上就是另一种谎。
+                    // 这里不去回读 EC —— 就是回读失败才走到这个分支的。
+                    _suppressFanModeEvent = true;
+                    try { _strongCoolRow.SetCheckedSilently(false); }
+                    finally { _suppressFanModeEvent = false; }
+
+                    SetStatus(result.Message, Theme.Err);
+
+                    if (userInitiated)
+                    {
+                        // 文案直接用 Core 的, 它已经写清了「回滚未完成」「可能处于不确定状态」
+                        // 「请立即确认 CPU 温度」; 上层重写容易丢掉这些关键提示。
+                        DarkDialog.Show(this, "风扇状态不确定", result.Message, DarkDialog.Tone.Error);
+                    }
+                }
+                else
+                {
+                    SetStatus(result.Message, Theme.Warn);
+
+                    if (userInitiated)
+                    {
+                        DarkDialog.Show(this, "风扇模式切换失败", result.Message, DarkDialog.Tone.Error);
+                        RevertFanModeCheck();
+                    }
                 }
             }
         }
@@ -1116,6 +1381,28 @@ public sealed class MainForm : Form
     // ---------------------------------------------------------------- 关闭与托盘
 
     /// <summary>
+    /// 把动作排到 UI 队列末尾执行, 窗口已销毁/句柄已释放时静默放弃。
+    ///
+    /// 关闭与托盘流程里有好几处必须"延后到当前消息之后"才安全的操作 (改 ShowInTaskbar
+    /// 会重建句柄, 在 FormClosing 里直接改会让 e.Cancel 失效), 而这类操作的触发时机
+    /// 恰好与退出重叠: 用户连点 ×、关机、托盘退出都可能让句柄在我们排完队之后就没
+    /// 了 —— 那时 BeginInvoke 抛 ObjectDisposedException / InvalidOperationException,
+    /// 而它跑在消息循环里, 没人捕获就会变成未处理异常。这里统一吞掉这两种"对象已经
+    /// 不在了"的异常; 其它异常照旧上抛, 不掩盖真正的 bug。
+    /// </summary>
+    private void PostToUi(Action action)
+    {
+        if (_disposedUi || IsDisposed) return;
+
+        try
+        {
+            BeginInvoke(action);
+        }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
+    }
+
+    /// <summary>
     /// 用户点 × 时收进托盘而不是退出 —— 但只在真的建出托盘图标时才这么做。
     /// 托盘没建起来还隐藏窗口, 用户就再也找不回这个程序了, 只能去任务管理器杀。
     /// </summary>
@@ -1129,7 +1416,7 @@ public sealed class MainForm : Form
         // 不能在 FormClosing 里直接改 ShowInTaskbar: 那会重建窗口句柄,
         // 重建之后 e.Cancel 就失效了, 进程会真的退出。
         // 必须延后到关闭流程结束之后再隐藏。
-        BeginInvoke(new Action(HideToTray));
+        PostToUi(HideToTray);
     }
 
     private void HideToTray()
@@ -1163,7 +1450,7 @@ public sealed class MainForm : Form
     {
         // Relayout 会改 ClientSize, 也会触发 Resize, 但那不是"用户最小化了窗口"。
         if (WindowState == FormWindowState.Minimized && _settings.MinimizeToTray && !_exiting)
-            BeginInvoke(new Action(HideToTray));
+            PostToUi(HideToTray);
     }
 
     // ---------------------------------------------------------------- 电源事件
@@ -1220,7 +1507,33 @@ public sealed class MainForm : Form
         if (_reader.ReadModeState() != FanModeState.StrongCool) return;
 
         FanModeResult r = _reader.SetMode(FanMode.Auto);
-        UiLog("RestoreAutoOnShutdown: " + (r.Ok ? "ok" : r.Message));
+
+        // 交还自动失败且"回滚也没成功"时, 风扇可能停在一个不确定的状态
+        // (一个手动满转、一个交还 EC, 或标志没生效而 EC 仍在读残留 PWM)。
+        // 关机前再试一次: SetMode 是幂等的, 成功一次就足够。
+        if (!r.Ok && r.Indeterminate)
+        {
+            UiLog("RestoreAutoOnShutdown: 首次交还失败且回滚未完成, 重试一次: " + r.Message);
+            FanModeResult retry = _reader.SetMode(FanMode.Auto);
+            r = retry;
+        }
+
+        if (r.Ok)
+        {
+            UiLog("RestoreAutoOnShutdown: ok");
+        }
+        else if (r.Indeterminate)
+        {
+            // 这里没有用户可看的界面 (正在关机), 只能留日志;
+            // 下一句话是给排查日志的人看的, 不要改成中性的描述。
+            UiLog("RestoreAutoOnShutdown: 失败且回滚未完成, 风扇状态不确定 —— "
+                  + "若下次开机听到风扇狂转或没有转速, 请启动 WujieFan 手动切回自动。"
+                  + " 详情: " + r.Message);
+        }
+        else
+        {
+            UiLog("RestoreAutoOnShutdown: " + r.Message);
+        }
     }
 
     // ---------------------------------------------------------------- 状态栏
@@ -1274,6 +1587,10 @@ public sealed class MainForm : Form
                 _trayIcon.Dispose();
                 _trayIcon = null;
             }
+
+            // 菜单项随 ContextMenuStrip 一起没了, 但它们引用的图标是本类现画并持有的。
+            foreach (Image img in _menuImages) img.Dispose();
+            _menuImages.Clear();
         }
 
         base.Dispose(disposing);

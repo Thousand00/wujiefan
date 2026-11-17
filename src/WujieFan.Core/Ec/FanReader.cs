@@ -166,8 +166,8 @@ public sealed class FanReader : IDisposable
         int f1 = _ec.Read(EcRegisters.ModeFlag1);
         int f2 = _ec.Read(EcRegisters.ModeFlag2);
 
-        if (f1 == 0x00 && f2 == 0x00) return FanModeState.Auto;
-        if (f1 == 0xDC && f2 == 0xDC) return FanModeState.StrongCool;
+        if (f1 == EcRegisters.ModeAuto && f2 == EcRegisters.ModeAuto) return FanModeState.Auto;
+        if (f1 == EcRegisters.ModeManualPwm && f2 == EcRegisters.ModeManualPwm) return FanModeState.StrongCool;
 
         // 0xA5 / 0xCC 以及两个风扇不一致的情形都归到 Mixed:
         // 这些状态下 EC 的行为不由本程序决定, 界面只能如实报告, 不能假装是自动。
@@ -198,22 +198,40 @@ public sealed class FanReader : IDisposable
             if (_mutex is not null && !locked)
                 return FanModeResult.Failure("EC 正被其它监控软件占用, 请稍后重试。");
 
-            if (mode == FanMode.StrongCool)
+            // 写入前快照。中途失败时靠它把 EC 还原, 并在提示里说清还原到了什么状态。
+            var snapshot = ModeSnapshot.Capture(_ec);
+
+            try
             {
-                _ec.Write(EcRegisters.ManualPwm1, (byte)EcRegisters.PwmMax);
-                _ec.Write(EcRegisters.ManualPwm2, (byte)EcRegisters.PwmMax);
-                _ec.Write(EcRegisters.ModeFlag1, 0xDC);
-                _ec.Write(EcRegisters.ModeFlag2, 0xDC);
+                if (mode == FanMode.StrongCool)
+                {
+                    // 先写 PWM 再写标志: 反过来的话标志一变 0xDC, EC 会立刻采信上一次的残留值。
+                    _ec.WritePwm(EcRegisters.ManualPwm1, EcRegisters.PwmMax);
+                    _ec.WritePwm(EcRegisters.ManualPwm2, EcRegisters.PwmMax);
+                    _ec.Write(EcRegisters.ModeFlag1, EcRegisters.ModeManualPwm);
+                    _ec.Write(EcRegisters.ModeFlag2, EcRegisters.ModeManualPwm);
+                }
+                else
+                {
+                    _ec.Write(EcRegisters.ModeFlag1, EcRegisters.ModeAuto);
+                    _ec.Write(EcRegisters.ModeFlag2, EcRegisters.ModeAuto);
+                }
             }
-            else
+            catch (Exception writeEx)
             {
-                _ec.Write(EcRegisters.ModeFlag1, 0x00);
-                _ec.Write(EcRegisters.ModeFlag2, 0x00);
+                // 四个寄存器不是原子写入的: 中断在这里就可能留下
+                // Fan1=0xDC / Fan2=0x00 的分裂状态 (一个风扇手动满转, 另一个交还 EC)。
+                // 必须主动回滚, 否则这个残留不受本程序任何后续逻辑管理。
+                return RecoverToAuto(writeEx, snapshot);
             }
 
             // 回读确认。写完不看一眼就等于赌 EC 收下了 ——
             // 之前踩过"界面说切换成功、EC 里其实还是旧值"的坑, 这里必须核对。
             FanModeState actual = ReadModeStateLocked();
+
+            // 回读到 Mixed 说明两个风扇的标志不一致, 正是"分裂残留"的样子,
+            // 属于不确定状态, 要区别于普通的"EC 没接受"。
+            bool split = actual == FanModeState.Mixed;
 
             return mode switch
             {
@@ -221,13 +239,19 @@ public sealed class FanReader : IDisposable
                     FanModeResult.Success("已切到强冷模式 (两个风扇满转)。", actual),
 
                 FanMode.StrongCool =>
-                    FanModeResult.Failure($"写入后回读的模式是 {Describe(actual)}, EC 没有接受强冷。", actual),
+                    FanModeResult.Failure(
+                        $"写入后回读的模式是 {Describe(actual)}, EC 没有接受强冷。" +
+                        (split ? "两个风扇的标志不一致, 可能有一个仍随手动值转动, 请确认温度。" : ""),
+                        actual, indeterminate: split),
 
                 _ when actual == FanModeState.Auto =>
                     FanModeResult.Success("已交还自动模式, 由 EC 按温度曲线调速。", actual),
 
                 _ =>
-                    FanModeResult.Failure($"写入后回读的模式是 {Describe(actual)}, EC 没有回到自动。", actual),
+                    FanModeResult.Failure(
+                        $"写入后回读的模式是 {Describe(actual)}, EC 没有回到自动。" +
+                        (split ? "两个风扇的标志不一致, 风扇状态不明确, 请确认温度。" : ""),
+                        actual, indeterminate: split),
             };
         }
         catch (Exception ex)
@@ -236,8 +260,86 @@ public sealed class FanReader : IDisposable
         }
         finally
         {
-            if (locked) _mutex?.Release();
+            // 无条件释放: Acquire 部分成功时也可能已经持有了句柄,
+            // 按返回值决定是否 Release 会把那把锁永久留在本进程手里。
+            _mutex?.Release();
         }
+    }
+
+    /// <summary>
+    /// 写入中途失败后的回滚: 尽力把两个风扇都交还 EC 自动模式。
+    ///
+    /// 顺序上先撤标志再还原 PWM —— EC 在自动模式下不采信手动 PWM 值,
+    /// 所以让标志离开 0xDC 是止损的第一步; 之后再把手动 PWM 还原成我们进来时的值,
+    /// 免得残留的 184 将来被别的软件改成 0xDC 时立刻满转。
+    ///
+    /// 回滚本身也可能失败 (EC 忙 / 句柄失效)。那种情况下风扇状态是不确定的,
+    /// 必须通过 <see cref="FanModeResult.Indeterminate"/> 让上层显著提示用户,
+    /// 不能只写一行日志就当作"切换失败"了事。
+    /// </summary>
+    private FanModeResult RecoverToAuto(Exception cause, ModeSnapshot snapshot)
+    {
+        var problems = new List<string>();
+
+        TryWrite(EcRegisters.ModeFlag1, EcRegisters.ModeAuto, problems);
+        TryWrite(EcRegisters.ModeFlag2, EcRegisters.ModeAuto, problems);
+        TryWritePwm(EcRegisters.ManualPwm1, snapshot.Pwm1, problems);
+        TryWritePwm(EcRegisters.ManualPwm2, snapshot.Pwm2, problems);
+
+        FanModeState actual;
+        try
+        {
+            actual = ReadModeStateLocked();
+        }
+        catch (Exception ex)
+        {
+            problems.Add("回读模式失败: " + ex.Message);
+            actual = FanModeState.Unknown;
+        }
+
+        string causeText = cause.Message;
+        string extra = problems.Count == 0 ? "" : " 回滚过程中的问题: " + string.Join("; ", problems) + "。";
+
+        if (actual == FanModeState.Auto)
+        {
+            return FanModeResult.Failure(
+                $"切换风扇模式失败: {causeText} 已回滚到自动模式 (EC 现为{Describe(actual)}), 由固件接管调速。{extra}",
+                actual, indeterminate: false);
+        }
+
+        return FanModeResult.Failure(
+            $"切换风扇模式失败: {causeText} **且回滚未能完成**, EC 现在回读到{Describe(actual)}。" +
+            "风扇可能处于不确定状态 (一个手动满转、另一个交给 EC, 或标志未生效)。" +
+            "请立即确认 CPU 温度, 必要时重启本程序或手动切回自动。" + extra,
+            actual, indeterminate: true);
+    }
+
+    private void TryWrite(ushort address, byte value, List<string> problems)
+    {
+        try { _ec?.Write(address, value); }
+        catch (Exception ex) { problems.Add($"写 0x{address:X4} 失败: {ex.Message}"); }
+    }
+
+    private void TryWritePwm(ushort address, int value, List<string> problems)
+    {
+        // 还原快照用的是**原始写入**, 不是 WritePwm。
+        // 快照里的值是"我们进来时 EC 里本来就有的", 可能是别的软件留下的
+        // 越界值 (例如 200, 那时风扇本来就是停的)。用 WritePwm 还原会因为它
+        // 越界而抛异常, 结果反而是我们写进去的 184 留在了寄存器里 ——
+        // 还原一个既存状态, 不该受"命令值必须合法"的约束。
+        // 反正标志已经先被撤成自动, EC 不会采信这个值。
+        try { _ec?.Write(address, (byte)value); }
+        catch (Exception ex) { problems.Add($"还原 0x{address:X4} 失败: {ex.Message}"); }
+    }
+
+    /// <summary>写入前四个寄存器 (两个手动 PWM、两个模式标志) 的取值。</summary>
+    private readonly record struct ModeSnapshot(int Pwm1, int Pwm2, int Flag1, int Flag2)
+    {
+        public static ModeSnapshot Capture(EcAccess ec) => new(
+            ec.Read(EcRegisters.ManualPwm1),
+            ec.Read(EcRegisters.ManualPwm2),
+            ec.Read(EcRegisters.ModeFlag1),
+            ec.Read(EcRegisters.ModeFlag2));
     }
 
     /// <summary>模式的中文说明, 界面和日志共用。</summary>

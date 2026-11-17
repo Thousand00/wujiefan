@@ -16,8 +16,22 @@ public sealed class FanReading
     /// <summary>PWM 硬件输出占空比 0..184。</summary>
     public int PwmOut { get; init; }
 
-    /// <summary>占空比百分比 0..100。</summary>
-    public double PwmPercent => PwmOut * 100.0 / EcRegisters.PwmMax;
+    /// <summary>
+    /// 占空比百分比 0..100。
+    ///
+    /// 显示层也要夹取: 这里读的是 EC 的**硬件输出**寄存器, 不是本程序写进去的值。
+    /// 若 EC 或其它软件把周期寄存器配到了别的值, PwmOut 可能大于 184,
+    /// 不夹取就会显示成 120% 这种数字 —— 用户看到只会更困惑, 显示 100% 才符合
+    /// "占空比不可能超过满量程"的直觉。
+    /// </summary>
+    public double PwmPercent
+    {
+        get
+        {
+            int clamped = Math.Clamp(PwmOut, EcRegisters.PwmMin, EcRegisters.PwmMax);
+            return clamped * 100.0 / EcRegisters.PwmMax;
+        }
+    }
 
     /// <summary>读数可信 (没有异常说明)。</summary>
     public bool IsValid => Note.Length == 0;

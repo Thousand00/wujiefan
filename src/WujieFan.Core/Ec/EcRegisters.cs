@@ -30,6 +30,12 @@ public static class EcRegisters
     /// <summary>PWM 周期寄存器对应的最大值: 有效占空比 0..184, 超过 184 风扇会直接停转。</summary>
     public const int PwmMax = 184;
 
+    /// <summary>
+    /// 有效占空比的下界。0 是**合法**值 (EC 允许风扇完全停), 所以不拒绝写入,
+    /// 但负数同样非法 —— 夹取层用它判断下界。
+    /// </summary>
+    public const int PwmMin = 0;
+
     /// <summary>转速换算常数: RPM = TachConstant / 计数器值。</summary>
     public const int TachConstant = 2_156_250;
 
@@ -47,6 +53,21 @@ public static class EcRegisters
 
     /// <summary>风扇 2 模式标志。</summary>
     public const ushort ModeFlag2 = 0x029F;
+
+    /// <summary>模式标志的取值: 自动, EC 按自己的温度曲线调速。本程序"交还自动"就是写它。</summary>
+    public const byte ModeAuto = 0x00;
+
+    /// <summary>
+    /// 模式标志的取值: 手动 PWM, EC 直接采信 ManualPwm1/2 的数值。
+    /// 这是唯一实测稳定的自定义模式; 0xA5 / 0xCC 会被 EC 在约 1.5 秒内回写覆盖。
+    /// </summary>
+    public const byte ModeManualPwm = 0xDC;
+
+    /// <summary>模式标志的取值: 自定义曲线。本程序不写, 仅用于识别"别人的软件接管了"。</summary>
+    public const byte ModeCustomCurve = 0xA5;
+
+    /// <summary>模式标志的取值: 自定义温度。本程序不写, 仅用于识别。</summary>
+    public const byte ModeCustomTemp = 0xCC;
 
     /// <summary>温度看门狗阈值。达到这个温度且持续数秒, 强冷模式立即交还 EC。</summary>
     public const int EmergencyTemperatureC = 92;
