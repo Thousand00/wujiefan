@@ -34,6 +34,17 @@ internal sealed class FanModeController
     private bool _emergencyRestored;
 
     /// <summary>
+    /// 上一次触发过热保护时真正生效的阈值, 只用于事后说明。
+    ///
+    /// 不能等到弹窗时再读设置 —— 那之间用户完全可能改过阈值, 于是提示里说
+    /// "连续 5 次达到 95C"而实际是按 92C 触发, 是编造而不是解释。
+    /// </summary>
+    private int _triggerTempC;
+
+    /// <summary>同上, 触发时生效的连续次数。</summary>
+    private int _triggerHoldSamples;
+
+    /// <summary>
     /// 本会话是否仍持有"强冷"意图 —— 由用户操作或启动归一化确认, 与 EC 回读的实时模式无关。
     /// </summary>
     private bool _strongCoolIntent;
@@ -92,6 +103,24 @@ internal sealed class FanModeController
 
     /// <summary>本会话是否仍主张强冷。退出路径用它判断要不要写 EC。</summary>
     public bool HasIntent => _strongCoolIntent;
+
+    /// <summary>
+    /// 过热阈值 (摄氏度), 每次判定时现读设置。
+    ///
+    /// 这里必须再夹一次: Core 的 Load() 已经归一化过, 但配置文件是明文、用户可以手改,
+    /// 设置弹窗也可能在本次会话中途改它。夹取而不是抛异常 —— 这是 UI 侧兜底,
+    /// 不是参数校验; 看门狗宁可用一个被修正过的阈值, 也不能因为参数荒唐就干脆不工作。
+    /// </summary>
+    private int EmergencyTempC =>
+        Math.Clamp(_settings.EmergencyTemperatureC,
+                   AppSettings.EmergencyTemperatureMin,
+                   AppSettings.EmergencyTemperatureMax);
+
+    /// <summary>过热保护需要的连续采样次数, 夹取理由同上。</summary>
+    private int EmergencyHoldSamples =>
+        Math.Clamp(_settings.EmergencyHoldSamples,
+                   AppSettings.EmergencyHoldSamplesMin,
+                   AppSettings.EmergencyHoldSamplesMax);
 
     /// <summary>勾选框的 CheckedChanged 出口。</summary>
     public void OnUserToggle()
@@ -227,7 +256,9 @@ internal sealed class FanModeController
 
         _tempUnknownSamples = 0;
 
-        if (t < EcRegisters.EmergencyTemperatureC)
+        int limitC = EmergencyTempC;
+
+        if (t < limitC)
         {
             _hotSamples = 0;
             return;
@@ -235,10 +266,15 @@ internal sealed class FanModeController
 
         _hotSamples++;
 
-        if (_hotSamples >= EcRegisters.EmergencyHoldSamples)
+        int holdSamples = EmergencyHoldSamples;
+
+        if (_hotSamples >= holdSamples)
         {
             _hotSamples = 0;
-            UiLog($"过热保护触发: {t}C 连续 {EcRegisters.EmergencyHoldSamples} 次, 交还自动模式");
+            // 记下本次真正生效的阈值, 弹窗要按它解释, 而不是按此刻的设置。
+            _triggerTempC = limitC;
+            _triggerHoldSamples = holdSamples;
+            UiLog($"过热保护触发: {t}C 连续 {holdSamples} 次 (阈值 {limitC}C), 交还自动模式");
             RestoreAuto("过热保护");
         }
     }
@@ -480,7 +516,7 @@ internal sealed class FanModeController
             _emergencyRestored = true;
             _setStatus("温度过高, 已自动交还风扇控制给 EC (强冷模式已取消)。", Theme.Warn);
             DarkDialog.Show(_owner, "过热保护",
-                $"CPU 温度连续 {EcRegisters.EmergencyHoldSamples} 次达到 {EcRegisters.EmergencyTemperatureC}C, 已把风扇交还 EC 自动控制。" +
+                $"CPU 温度连续 {_triggerHoldSamples} 次达到 {_triggerTempC}C, 已把风扇交还 EC 自动控制。" +
                 "\n\n这通常意味着强冷没有生效 (EC 没有接受手动 PWM)。建议检查散热环境, 或先关闭强冷。",
                 DarkDialog.Tone.Warning);
         }

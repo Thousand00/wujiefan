@@ -161,7 +161,8 @@ public class AppSettingsTests
 
         Assert.True(s.ForceUnsupported);                       // 保留用户意图
         Assert.NotNull(s.ForceUnsupportedConfirmedAt);         // 但只给 12 小时
-        Assert.True(AppSettings.LoadDegraded);
+        Assert.True(AppSettings.LoadNormalized);
+        Assert.False(AppSettings.LoadDegraded);                // 文件是好的, 不算降级
         Assert.Contains("12 小时", AppSettings.LoadWarning!);
     }
 

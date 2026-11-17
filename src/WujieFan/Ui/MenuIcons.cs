@@ -49,6 +49,27 @@ internal static class TrayIcons
         g.DrawLine(pen, circle.Right - d * 0.12f, circle.Bottom - d * 0.12f, w * 0.86f, h * 0.86f);
     });
 
+    /// <summary>设置: 齿轮 (一圈齿 + 中心孔)。</summary>
+    public static Image Settings(int size) => Draw(size, (g, pen, w, h) =>
+    {
+        float cx = w * 0.5f;
+        float cy = h * 0.5f;
+        float r = w * 0.30f;
+        float rIn = w * 0.11f;
+
+        g.DrawEllipse(pen, cx - r, cy - r, r * 2, r * 2);
+        g.DrawEllipse(pen, cx - rIn, cy - rIn, rIn * 2, rIn * 2);
+
+        // 六颗齿, 从圆心向外画一小段 —— 比画成方块在 16px 下更干净
+        for (int i = 0; i < 6; i++)
+        {
+            double a = i * Math.PI / 3.0;
+            float dx = (float)Math.Cos(a);
+            float dy = (float)Math.Sin(a);
+            g.DrawLine(pen, cx + dx * r, cy + dy * r, cx + dx * (r + w * 0.09f), cy + dy * (r + w * 0.09f));
+        }
+    });
+
     /// <summary>退出: 电源符号。</summary>
     public static Image Exit(int size) => Draw(size, (g, pen, w, h) =>
     {

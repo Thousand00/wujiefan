@@ -10,7 +10,7 @@ using WujieFan.Core.Hardware;
 namespace WujieFan.Ui;
 
 /// <summary>
-/// 主窗口: 显示两个风扇转速与 CPU 温度, 提供开机自启动、RTSS 供数与强冷开关。
+/// 主窗口: 显示两个风扇转速与 CPU 温度, 提供强冷开关与设置入口。
 ///
 /// 界面按 UI/WujieFan-UI-设计稿.html 实现 (2026-11-15): 深色圆角卡片、
 /// 自绘标题栏、三列数据卡、整行可点的开关、语义色状态栏。
@@ -33,9 +33,8 @@ public sealed class MainForm : Form
     private readonly DataCard _fan2Card = new();
     private readonly DataCard _tempCard = new();
     private readonly StatusBar _statusBar = new();
-    private readonly ToggleRow _autoStartRow = new();
-    private readonly ToggleRow _rtssRow = new();
     private readonly ToggleRow _strongCoolRow = new();
+    private readonly ActionRow _settingsRow = new();
     private readonly Label _machineLabel = new();
     private readonly Label _footnoteLabel = new();
 
@@ -44,8 +43,6 @@ public sealed class MainForm : Form
     private readonly AppSettings _settings = AppSettings.Load();
     private AutoStartManager? _autoStart;
 
-    /// <summary>正在回填界面初始状态, 此时不应把 CheckedChanged 当成用户操作。</summary>
-    private bool _suppressAutoStartEvent;
 
     private readonly RtssPublisher _publisher;
     private readonly TrayHost _tray;
@@ -122,36 +119,26 @@ public sealed class MainForm : Form
         _tempCard.Value = "--";
         _tempCard.BigValue = false;
 
-        _autoStartRow.Text = "开机自动启动";
-        _autoStartRow.Hint = "(需要管理员权限)";
-        _autoStartRow.CheckedChanged += OnAutoStartChanged;
-
-        _rtssRow.Text = "向 RTSS 提供数据";
-        _rtssRow.Hint = "(AIDA64 通道)";
-        _rtssRow.Checked = _settings.PublishToRtss;
-        _rtssRow.CheckedChanged += (_, _) =>
-        {
-            _settings.PublishToRtss = _rtssRow.Checked;
-            _settings.Save();
-            _publisher.Apply();
-        };
-
         _strongCoolRow.Text = "强冷模式";
         _strongCoolRow.Hint = "(两个风扇满转)";
         _strongCoolRow.CheckedChanged += (_, _) => _mode.OnUserToggle();
+
+        _settingsRow.Text = "设置";
+        _settingsRow.Hint = "(自启动 / RTSS / 过热保护)";
+        _settingsRow.Click += (_, _) => OpenSettings();
 
         _footnoteLabel.AutoSize = false;
         _footnoteLabel.BackColor = Theme.WinBg;
         _footnoteLabel.ForeColor = Theme.Text3;
         _footnoteLabel.Font = Theme.Footnote;
-        _footnoteLabel.Text = "点 × 不收进程, 只收进托盘继续读数与供数; 双击托盘图标唤回窗口。";
+        _footnoteLabel.Text = "自启动 / RTSS 供数 / 过热保护都在「设置」里; 点 × 不收进程, 只收进托盘继续读数与供数。";
 
         _statusBar.SetStatus("正在初始化...", Theme.Text2, Color.Transparent);
 
         Controls.AddRange(new Control[]
         {
             _machineLabel, _fan1Card, _fan2Card, _tempCard,
-            _autoStartRow, _rtssRow, _strongCoolRow, _statusBar, _footnoteLabel,
+            _strongCoolRow, _settingsRow, _statusBar, _footnoteLabel,
         });
 
         Relayout();
@@ -190,11 +177,9 @@ public sealed class MainForm : Form
         int rowW = innerW - Dpi.Px(this, 16);
         int rowX = padX + Dpi.Px(this, 8);
 
-        _autoStartRow.Bounds = new Rectangle(rowX, y, rowW, rowH);
-        y += rowH;
-        _rtssRow.Bounds = new Rectangle(rowX, y, rowW, rowH);
-        y += rowH;
         _strongCoolRow.Bounds = new Rectangle(rowX, y, rowW, rowH);
+        y += rowH;
+        _settingsRow.Bounds = new Rectangle(rowX, y, rowW, rowH);
         y += rowH + Dpi.Px(this, 8);
 
         int statusH = _statusBar.MeasureHeight(innerW);
@@ -300,42 +285,21 @@ public sealed class MainForm : Form
 
     private void OnFormLoad(object? sender, EventArgs e)
     {
-        _tray.Create(RestoreFromTray, () => _mode.RestoreAuto("托盘菜单"), _polling.RetryHardwareCheck, ExitApplication);
+        _tray.Create(RestoreFromTray, () => _mode.RestoreAuto("托盘菜单"), _polling.RetryHardwareCheck, OpenSettings, ExitApplication);
 
         _autoStart = new AutoStartManager();
 
-        // 回填勾选状态必须屏蔽 CheckedChanged: 赋值本身会触发事件,
-        // 于是 OnAutoStartChanged 又跑一次 Enable() —— 白白多起一个 schtasks 进程,
-        // 还会把状态栏改写成"已启用", 盖掉后面 Open 写的真实状态。
-        _suppressAutoStartEvent = true;
-        try
+        // 开机自启的真相在计划任务里, 不在配置文件里, 所以这里不缓存状态 ——
+        // 设置弹窗每次打开都重新问一遍。启动时只做一件必要的事: 修旧任务定义。
+        //
+        // 0.1.0 用 schtasks 模板建的旧任务带着"拔电源不启动"和"72 小时被强杀",
+        // 用户不会为了升级再去勾一次自启动, 所以这里主动修。
+        // 但只在确实不符合时才重写 —— 每次启动都跑 schtasks 既慢又在动系统。
+        if (!_autoStart.HasForeignTask() && _autoStart.IsEnabled() && !_autoStart.IsUpToDate())
         {
-            if (_autoStart.HasForeignTask())
-            {
-                _autoStartRow.Enabled = false;
-                _autoStartRow.Text = "开机自动启动";
-                _autoStartRow.Hint = "(同名任务已存在, 已锁定)";
-            }
-            else
-            {
-                bool enabled = _autoStart.IsEnabled();
-                _autoStartRow.SetCheckedSilently(enabled);
-
-                // 已启用时还要检查任务定义是不是当前版本的要求。
-                // 0.1.0 用 schtasks 模板建的旧任务带着"拔电源不启动"和"72 小时被强杀",
-                // 用户不会为了升级再去勾一次自启动, 所以这里主动修。
-                // 但只在确实不符合时才重写 —— 每次启动都跑 schtasks 既慢又在动系统。
-                if (enabled && !_autoStart.IsUpToDate())
-                {
-                    AutoStartManager.Result fix = _autoStart.Enable();
-                    if (!fix.Ok)
-                        SetStatus("自启动任务更新失败: " + fix.Message.Split('\n')[0], Theme.Warn);
-                }
-            }
-        }
-        finally
-        {
-            _suppressAutoStartEvent = false;
+            AutoStartManager.Result fix = _autoStart.Enable();
+            if (!fix.Ok)
+                SetStatus("自启动任务更新失败: " + fix.Message.Split('\n')[0], Theme.Warn);
         }
 
         _machineLabel.Text = DescribeMachine();
@@ -351,13 +315,24 @@ public sealed class MainForm : Form
         _polling.Start();
         _polling.Poll();
 
-        // 设置降级提示放在所有初始化状态写完之后, 否则会被 Open / Poll
+        // 设置提示放在所有初始化状态写完之后, 否则会被 Open / Poll
         // 写的"正常"文案盖掉。用户改了设置却没生效, 必须让人看见一次。
+        //
+        // 两种情况必须分开说, 因为后果完全不同:
+        //   - 降级: 文件读不出/损坏 → 用安全默认且**不接管风扇**, 这是警告色;
+        //   - 归一化: 某个字段越界或过期被修正 → 程序照常接管风扇,
+        //     只是值被改过。这种用警告色会让人以为出事了, 降到普通文字色。
         if (AppSettings.LoadDegraded)
         {
             string why = AppSettings.LoadWarning ?? "原因未知";
             SetStatus("设置文件已降级为安全默认 (不接管风扇): " + why, Theme.Warn);
             UiLog("AppSettings degraded: " + why);
+        }
+        else if (AppSettings.LoadNormalized)
+        {
+            string why = AppSettings.LoadWarning ?? "原因未知";
+            SetStatus("设置中有字段越界或过期, 已自动修正: " + why, Theme.Text2);
+            UiLog("AppSettings normalized: " + why);
         }
 
         // 开机自启动时不弹窗打扰, 直接进托盘。手动启动则正常显示窗口,
@@ -372,29 +347,70 @@ public sealed class MainForm : Form
         return $"{id.SystemManufacturer} {id.SystemProductName} · BIOS {id.BiosVersion} · EC {id.EcVersionText}";
     }
 
-    // ---------------------------------------------------------------- 开机自启动
+    // ---------------------------------------------------------------- 设置
 
-    private void OnAutoStartChanged(object? sender, EventArgs e)
+    /// <summary>
+    /// 打开设置弹窗并落实用户的选择。
+    ///
+    /// 顺序有讲究: 先把值写回 _settings 并落盘, 成功了才去动计划任务和 RTSS 供数。
+    /// 反过来做的话, 一旦落盘失败就会出现"自启动已经改了但配置里没记"的分裂状态,
+    /// 下次启动又按旧配置纠正回来 —— 用户会觉得设置自己乱跳。
+    /// </summary>
+    private void OpenSettings()
     {
-        if (_suppressAutoStartEvent) return;
         if (_autoStart is null) return;
 
-        AutoStartManager.Result result = _autoStartRow.Checked ? _autoStart.Enable() : _autoStart.Disable();
-
-        if (result.Ok)
+        // 打开前重新问一次计划任务的真实状态: 用户可能在程序之外用任务计划程序
+        // 或别的工具动过它, 只信启动时那次快照会把界面显示错。
+        var state = new AutoStartState();
+        if (_autoStart.HasForeignTask())
         {
-            SetStatus(result.Message.Split('\n')[0], Theme.Text2);
+            state.Locked = true;
+            state.Hint = "(同名任务已存在, 已锁定)";
+        }
+        else
+        {
+            state.Enabled = _autoStart.IsEnabled();
+        }
+
+        if (!SettingsDialog.Show(this, _settings, state)) return;
+
+        // 弹窗只改了对象里的值, 落盘在这里。失败要让用户看见:
+        // 悄悄失败等于让他以为设置生效了, 下次启动又变回去。
+        if (!_settings.Save())
+        {
+            SetStatus("设置保存失败, 本次修改不会生效", Theme.Err);
+            UiLog("SettingsDialog: 保存失败");
+            DarkDialog.Show(this, "设置",
+                "设置写入配置文件失败, 本次修改不会生效。请检查 %LOCALAPPDATA%\\WujieFan 是否可写。",
+                DarkDialog.Tone.Error);
             return;
         }
 
-        SetStatus(result.Message.Split('\n')[0], Theme.Warn);
-        DarkDialog.Show(this, "开机自启动", result.Message, DarkDialog.Tone.Error);
+        // RTSS 供数开关是纯本地状态, 立刻生效。
+        _publisher.Apply();
 
-        // 失败必须把勾选拨回真实状态, 否则界面在撒谎: 用户以为已经开了。
-        // 用 SetCheckedSilently 而不是直接赋 Checked, 避免又触发一次 CheckedChanged。
-        _suppressAutoStartEvent = true;
-        try { _autoStartRow.SetCheckedSilently(_autoStart.IsEnabled()); }
-        finally { _suppressAutoStartEvent = false; }
+        // 开机自启要动系统: 按用户选的目标态执行, 失败则把界面拉回真实状态。
+        bool wantAutoStart = state.Enabled && !state.Locked;
+        if (!state.Locked && wantAutoStart != _autoStart.IsEnabled())
+        {
+            AutoStartManager.Result result = wantAutoStart ? _autoStart.Enable() : _autoStart.Disable();
+            if (result.Ok)
+            {
+                SetStatus(result.Message.Split('\n')[0], Theme.Text2);
+            }
+            else
+            {
+                // 失败必须回滚成真实状态, 否则界面在撒谎: 用户以为已经开了。
+                state.Enabled = _autoStart.IsEnabled();
+                SetStatus(result.Message.Split('\n')[0], Theme.Warn);
+                DarkDialog.Show(this, "开机自动启动", result.Message, DarkDialog.Tone.Error);
+            }
+        }
+        else
+        {
+            SetStatus("设置已保存", Theme.Text2);
+        }
     }
 
     /// <summary>

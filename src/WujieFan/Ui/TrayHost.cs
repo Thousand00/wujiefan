@@ -41,8 +41,9 @@ internal sealed class TrayHost : IDisposable
     /// <param name="onRestore">显示主窗口。</param>
     /// <param name="onRestoreAuto">立刻把风扇交还 EC 自动 (托盘里的逃生口)。</param>
     /// <param name="onRetryHardware">清掉跳过校验标志并重新检测机型。</param>
+    /// <param name="onSettings">打开设置弹窗 (自启动 / RTSS 供数 / 过热保护)。</param>
     /// <param name="onExit">真正退出程序。</param>
-    public void Create(Action onRestore, Action onRestoreAuto, Action onRetryHardware, Action onExit)
+    public void Create(Action onRestore, Action onRestoreAuto, Action onRetryHardware, Action onSettings, Action onExit)
     {
         try
         {
@@ -51,7 +52,7 @@ internal sealed class TrayHost : IDisposable
                 Icon = LoadAppIcon(32),
                 Text = "WujieFan - 无界14+ 风扇转速",
                 Visible = true,
-                ContextMenuStrip = BuildMenu(onRestore, onRestoreAuto, onRetryHardware, onExit),
+                ContextMenuStrip = BuildMenu(onRestore, onRestoreAuto, onRetryHardware, onSettings, onExit),
             };
 
             _icon.DoubleClick += (_, _) => onRestore();
@@ -111,6 +112,7 @@ internal sealed class TrayHost : IDisposable
         Action onRestore,
         Action onRestoreAuto,
         Action onRetryHardware,
+        Action onSettings,
         Action onExit)
     {
         var menu = new ContextMenuStrip
@@ -128,6 +130,7 @@ internal sealed class TrayHost : IDisposable
         // 面板上那个勾选框万一因为界面卡住点不动, 这里是最后一条路。
         menu.Items.Add(new ToolStripMenuItem("恢复自动风扇", Track(TrayIcons.Restore(16)), (_, _) => onRestoreAuto()));
         menu.Items.Add(new ToolStripMenuItem("重新检测机型", Track(TrayIcons.Rescan(16)), (_, _) => onRetryHardware()));
+        menu.Items.Add(new ToolStripMenuItem("设置...", Track(TrayIcons.Settings(16)), (_, _) => onSettings()));
         var sep = new ToolStripSeparator { Margin = new Padding(8, 4, 8, 4) };
         menu.Items.Add(sep);
 

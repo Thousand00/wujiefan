@@ -54,6 +54,40 @@ public sealed class AppSettings
     /// </summary>
     public FanMode FanMode { get; set; } = FanMode.Auto;
 
+    /// <summary>
+    /// 过热保护阈值 (摄氏度)。强冷模式下 CPU 温度达到这个值、且连续若干次采样都达到,
+    /// 就把风扇交还给 EC 自动控制。
+    ///
+    /// 允许用户改的原因: 这个阈值本质上是"多吵 vs 多热"的取舍, 因人因场景而异 ——
+    /// 编译/渲染的用户嫌 92℃ 太保守 (风扇满转本来就是为了压温度), 而安静优先的用户
+    /// 希望更早收手。默认值取 <see cref="EcRegisters.EmergencyTemperatureC"/> (92),
+    /// 与 0.4.x 的行为完全一致, 即"不改设置就等于没变"。
+    /// </summary>
+    public int EmergencyTemperatureC { get; set; } = EcRegisters.EmergencyTemperatureC;
+
+    /// <summary>
+    /// 过热保护需要的连续采样次数。默认 <see cref="EcRegisters.EmergencyHoldSamples"/> (3)。
+    ///
+    /// 单次尖峰 (编译瞬间、游戏加载) 不该打断用户的强冷, 所以要求"连续 N 次"。
+    /// 调小 = 更早收手但更容易被瞬时尖峰误触发; 调大 = 更能容忍尖峰但反应更慢。
+    /// </summary>
+    public int EmergencyHoldSamples { get; set; } = EcRegisters.EmergencyHoldSamples;
+
+    /// <summary>过热阈值的可设下界。低于 70℃ 会在正常负载下频繁交还, 不像是用户想要的行为。</summary>
+    public const int EmergencyTemperatureMin = 70;
+
+    /// <summary>
+    /// 过热阈值的可设上界。取 100: EC 温度寄存器的有效量程是 1..100
+    /// (见 <see cref="EcRegisters.CpuTemperature"/>), 设到 100 以上等于关掉这项保护。
+    /// </summary>
+    public const int EmergencyTemperatureMax = 100;
+
+    /// <summary>连续采样次数的可设下界。1 表示"单次达标就收手"。</summary>
+    public const int EmergencyHoldSamplesMin = 1;
+
+    /// <summary>连续采样次数的可设上界。10000ms 轮询下 60 次已是 1 分钟, 再大就没有保护意义了。</summary>
+    public const int EmergencyHoldSamplesMax = 60;
+
     /// <summary>配置文件自身的结构版本。缺失视为 0 (0.4.0 及更早写的文件)。</summary>
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
 
@@ -70,10 +104,21 @@ public sealed class AppSettings
     /// </summary>
     public static string? LastError { get; private set; }
 
-    /// <summary>本次 Load 是否发生了降级 (文件损坏 / 版本未知 / 字段越界)。</summary>
+    /// <summary>
+    /// 本次 Load 是否**降级**了 —— 即文件读不出来 / 损坏 / 为空 / 版本未知,
+    /// 结果是一份 <see cref="SafeDefaults"/> (不接管风扇)。
+    /// 界面只能在它为 true 时说"不接管风扇"; 只是字段被归一化时它是 false。
+    /// </summary>
     public static bool LoadDegraded { get; private set; }
 
-    /// <summary>本次 Load 降级的原因, 供界面提示用; 未降级时为 null。</summary>
+    /// <summary>
+    /// 本次 Load 是否**归一化**过字段 (越界夹取、过期失效、旧格式补时间戳等)。
+    /// 这与降级是两件事: 归一化之后程序照常工作, 风扇照常接管,
+    /// 只是有个别字段不是文件里写的那个值。界面应说明"已修正"而不是"不接管风扇"。
+    /// </summary>
+    public static bool LoadNormalized { get; private set; }
+
+    /// <summary>本次 Load 的提示信息 (降级原因与归一化说明都可能在里面); 无话可说时为 null。</summary>
     public static string? LoadWarning { get; private set; }
 
     /// <summary>
@@ -88,12 +133,15 @@ public sealed class AppSettings
         PublishToRtss = true,
         ForceUnsupported = false,
         FanMode = FanMode.Auto,
+        EmergencyTemperatureC = EcRegisters.EmergencyTemperatureC,
+        EmergencyHoldSamples = EcRegisters.EmergencyHoldSamples,
         SchemaVersion = CurrentSchemaVersion,
     };
 
     public static AppSettings Load()
     {
         LoadDegraded = false;
+        LoadNormalized = false;
         LoadWarning = null;
         LastError = null;
 
@@ -189,6 +237,25 @@ public sealed class AppSettings
         if (clamped != parsed.PollIntervalMs)
         {
             parsed.PollIntervalMs = clamped;
+            changed = true;
+        }
+
+        // 过热保护的两个参数。它们决定"什么时候把风扇交还 EC", 属于安全侧设置,
+        // 所以越界一律**回到默认值**, 而不是夹到边界:
+        //   - 温度若夹到上界 100, 等于悄悄把保护关掉 (EC 量程就是 1..100), 那是反向的;
+        //     回到 92 至少还是一项真的保护。手改成 200 通常是手误或别的东西写坏了。
+        //   - 次数同理: 夹到上界 60 在 1 秒轮询下是一分钟, 也已经没有保护意义。
+        if (parsed.EmergencyTemperatureC < EmergencyTemperatureMin
+            || parsed.EmergencyTemperatureC > EmergencyTemperatureMax)
+        {
+            parsed.EmergencyTemperatureC = EcRegisters.EmergencyTemperatureC;
+            changed = true;
+        }
+
+        if (parsed.EmergencyHoldSamples < EmergencyHoldSamplesMin
+            || parsed.EmergencyHoldSamples > EmergencyHoldSamplesMax)
+        {
+            parsed.EmergencyHoldSamples = EcRegisters.EmergencyHoldSamples;
             changed = true;
         }
 
@@ -301,12 +368,12 @@ public sealed class AppSettings
     }
 
     /// <summary>
-    /// 追加一条降级提示。用追加而不是覆盖: 一次 Load 里可能同时命中
+    /// 追加一条**归一化**提示(不是降级)。用追加而不是覆盖: 一次 Load 里可能同时命中
     /// "旧版绕过标志"和"字段越界", 后一条不该把前一条抹掉。
     /// </summary>
     private static void AddWarning(string reason)
     {
-        LoadDegraded = true;
+        LoadNormalized = true;
         LoadWarning = LoadWarning is null ? reason : LoadWarning + " " + reason;
     }
 
