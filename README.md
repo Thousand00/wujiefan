@@ -49,8 +49,8 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 
 | 包 | 大小 | 前提 |
 |---|---|---|
-| `WujieFan-0.4.1-win-x64.zip` | 约 260 KiB | 需 .NET 8 桌面运行时 |
-| `WujieFan-0.4.1-win-x64-portable.zip` | 约 93.8 MiB | 免运行时，解压即用 |
+| `WujieFan-0.5.1-win-x64.zip` | 约 242 KiB | 需 .NET 8 桌面运行时 |
+| `WujieFan-0.5.1-win-x64-portable.zip` | 约 90.8 MiB | 免运行时，解压即用 |
 
 两种包解压后目录结构完全相同，一共 6 个文件：3 个程序文件 + 3 份文档。
 精确字节数与 sha256 见 Releases 页面（每个资产都标注 digest）。
@@ -70,7 +70,7 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 包内 `WujieFan.integrity.json` 记录了 exe 的 sha256 与长度，启动器在每次登录自启前会比对。
 清单只收录磁盘上真实存在的文件 —— 单文件发布后 Core 已并进 exe，故清单里只有 exe 条目。
 
-自己打包：`powershell -File tools\make-release.ps1 -Version 0.4.1`（需提权，产物在 `dist\`）。
+自己打包：`powershell -File tools\make-release.ps1 -Version 0.5.1`（需提权，产物在 `dist\`）。
 版本号只在仓库根的 `Directory.Build.props` 定义，脚本会校验 `-Version` 与它一致，不一致直接报错。
 
 > 下文出现的 `tools\` 目录下的脚本都是**仓库内的开发与诊断工具，不随发布包分发**。
