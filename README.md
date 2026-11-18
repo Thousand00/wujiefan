@@ -188,18 +188,22 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 ## 目录
 
     assets\                程序图标源文件
-    UI\                   界面设计稿（单页 HTML 原型）
+    UI\                   界面设计稿（单页 HTML 原型）与两版图标源文件
     src\WujieFan\          主程序（WinForms .NET 8 x64）
-    src\WujieFan\Ui\       界面：Theme / Controls / DarkDialog / MenuIcons / MainForm
+    src\WujieFan\Ui\       界面：Theme / Controls / DarkDialog / MenuIcons / MainForm 与各控制器
     src\WujieFan.Launcher\ 开机自启动的提权中转（asInvoker，只做一次 ShellExecuteEx）
     src\WujieFan.Core\     核心库：读 EC / 机型校验 / AIDA 供数 / 设置 / 自启
     tests\EcReadSmoke\     命令行验证工具（含自启动往返测试）
     tests\FanControlLab\  风扇转速控制实验台（**不是产品**，见下方「风扇控制」）
+    tests\WujieFan.Core.Tests\  xUnit 单测（无硬件依赖）
     tools\                 注入脚本、诊断脚本、RTSS 重启脚本（仅仓库，不分发）
     docs\                  技术文档（先读 01-现状与技术总结.md）
     docs\archive\          失败实验的原始资料
+    .github\workflows\     CI（守卫 + 构建/单测/冒烟）
     dist\app\              发布产物（不入库，可重建）
     backup\                改动前的 RTSS 原始配置，用于还原（不入库）
+
+版本号只在仓库根的 `Directory.Build.props` 定义，三个 csproj 不再各写一份。
 
 ## 技术文档
 
@@ -217,7 +221,8 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
   和两个模式标志（`0x021F`/`0x029F`）。不碰风扇曲线表、不碰阈值、不改 NVRAM。
   自动模式下程序完全不写 EC，只读。
 - **强冷模式的残留风险**：主程序被强杀时 EC 会停在手动满转（吵，但不超温）。三条恢复路径：
-  下次启动时的启动归一化、托盘右键「恢复自动风扇」、`WujieFan.exe --fan-auto`。
+  下次启动时的启动归一化、托盘右键「恢复自动风扇」、以及关掉程序再重开。
+  （曾经文档里写过 `WujieFan.exe --fan-auto`，但主程序从未实现这个参数，只认 `--tray`，已删。）
   `tests\FanControlLab` 是**独立的实验程序**，能写任意 PWM（因此必须显式 `--apply` 并带看门狗），
   它不会被主程序调用，也不随发布包分发。
 - **PawnIO 的 LpcIO.bin 模块是 LGPL 2.1**。本程序把它作为嵌入资源分发，因此同样适用 LGPL 2.1：
