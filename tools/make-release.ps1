@@ -64,20 +64,25 @@ if (Get-Process WujieFan -ErrorAction SilentlyContinue) {
   throw "WujieFan is still running and cannot be stopped (it is elevated). Close it from the tray menu, or run this script as Administrator."
 }
 
-# dotnet publish 是合并输出, 不会删除上一次的残留。dist\app 里若还躺着旧版本
-# (或旧依赖) 的 DLL, 会被原样打进 zip (t5 P1-4)。发布前先整体清空, 保证产物
-# 只包含本次 publish 写出的文件。
-if (Test-Path $fdDir) {
-  Write-Host "[0/5] clear stale output: $fdDir"
-  Remove-Item $fdDir -Recurse -Force
+# dotnet publish 是合并输出, 不会删除上一次的残留。三个输出目录都要清:
+#   - dist\app: 残留的旧 DLL 会被打进框架包 (t5 P1-4)。
+#   - dist\portable / dist\launcher: 单文件发布后目录里本不该有 WujieFan.Core.dll,
+#     但上一轮多文件发布的残留不会被清掉; 完整性清单按"磁盘上存在就收录"生成,
+#     于是清单里会多出一条包里根本没有的 Core.dll, 启动器每次开机都会误报。
+# 一次性清空, 保证产物只包含本次 publish 写出的文件。
+foreach ($dir in @($fdDir, $scDir, $lsDir)) {
+  if (Test-Path $dir) {
+    Write-Host "[0/5] clear stale output: $dir"
+    Remove-Item $dir -Recurse -Force
+  }
 }
 
-Write-Host "[1/5] publish main app (framework-dependent)"
-dotnet publish $proj -c Release -o $fdDir | Out-Host
+Write-Host "[1/5] publish main app (framework-dependent, single-file)"
+dotnet publish $proj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:DebugType=none -o $fdDir | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "publish failed" }
 
-Write-Host "[2/5] publish launcher (framework-dependent, same dir)"
-dotnet publish $lproj -c Release -o $fdDir | Out-Host
+Write-Host "[2/5] publish launcher (framework-dependent, single-file, same dir)"
+dotnet publish $lproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:DebugType=none -o $fdDir | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "launcher publish failed" }
 
 Write-Host "[3/5] publish main app (self-contained single-file)"
@@ -95,13 +100,18 @@ function Add-Entry($zip, $file, $entryName) {
 }
 
 function Add-Docs($zip) {
-  Get-ChildItem (Join-Path $root "tools") -File | Where-Object { $_.Name -ne "make-release.ps1" } | ForEach-Object {
-    Add-Entry $zip $_ ("WujieFan/tools/" + $_.Name)
-  }
+  # tools/ 不进发布包: verify.ps1、make-release.ps1 是开发工具, add-wujie-layers.py 等
+  # 需要 Python, 普通用户没有。仓库里 tools/ 保留不动, 只是不分发。
   Add-Entry $zip (Get-Item (Join-Path $root "README.md"))     "WujieFan/README.md"
   Add-Entry $zip (Get-Item (Join-Path $root "THIRDPARTY.md")) "WujieFan/THIRDPARTY.md"
   Add-Entry $zip (Get-Item (Join-Path $root "LICENSE"))       "WujieFan/LICENSE"
 }
+
+# 发布包里的程序条目白名单。单文件发布后 dist\app 只会写这两个 exe 加一份清单;
+# 若这里还按"目录里有什么就打什么", 一旦 publish 因故退化成多文件输出 (或残留了上次的
+# DLL), 就会静默打出一堆散碎文件 —— 正是要修的发布包不整洁问题。
+# 显式白名单 + 缺文件即报错, 让"打空包/打残包"在打包阶段就失败而不是到用户手上才发现。
+$script:AppFileWhitelist = @("WujieFan.exe", "WujieFanLauncher.exe", "WujieFan.integrity.json")
 
 # 生成启动器在开机自启前比对的完整性清单 (t11)。
 #
@@ -137,16 +147,44 @@ function New-IntegrityManifest([string]$Dir, [string[]]$Names) {
 
 function New-FrameworkPkg([string]$Dest, [string]$BinDir) {
   if (Test-Path $Dest) { Remove-Item $Dest -Force }
-  $zip = [System.IO.Compression.ZipFile]::Open($Dest, "Create")
-  Get-ChildItem $BinDir -File | Where-Object { $_.Extension -ne ".pdb" } | ForEach-Object {
-    Add-Entry $zip $_ ("WujieFan/" + $_.Name)
+
+  # 先解析白名单为真实文件, 缺任何一个就整体失败。顺序: 全部校验通过再建 zip,
+  # 避免留下一个半成品 zip 让人误以为打包成功。
+  $items = @()
+  foreach ($n in $script:AppFileWhitelist) {
+    $p = Join-Path $BinDir $n
+    if (-not (Test-Path $p)) {
+      throw "expected '$n' in $BinDir but it is missing. Single-file publish may have failed, or the output was cleaned. Refusing to build a partial package."
+    }
+    $items += (Get-Item $p)
   }
+
+  # 目录里若还有白名单之外的文件, 说明 publish 没有真正单文件化 (或残留了旧依赖)。
+  # 不静默忽略: 打出来的包会和 README 承诺的文件清单不一致。
+  $extra = @(Get-ChildItem $BinDir -File | Where-Object { $script:AppFileWhitelist -notcontains $_.Name -and $_.Extension -ne ".pdb" })
+  if ($extra.Count -gt 0) {
+    $names = ($extra | ForEach-Object { $_.Name }) -join ", "
+    throw "unexpected file(s) in ${BinDir}: $names. Publish should produce only $($script:AppFileWhitelist -join ', '). Single-file publish is probably not active."
+  }
+
+  $zip = [System.IO.Compression.ZipFile]::Open($Dest, "Create")
+  foreach ($f in $items) { Add-Entry $zip $f ("WujieFan/" + $f.Name) }
   Add-Docs $zip
   $zip.Dispose()
+
+  Write-Host ("      framework pkg: {0} app file(s): {1}" -f $items.Count, (($items | ForEach-Object { $_.Name }) -join ", "))
 }
 
 function New-PortablePkg([string]$Dest, [string]$MainExe, [string]$LauncherExe, [string]$Manifest) {
   if (Test-Path $Dest) { Remove-Item $Dest -Force }
+
+  # 三个输入来自不同 publish 目录, 缺任何一个都要明确指出是哪个, 而不是抛 Get-Item 的原始异常。
+  foreach ($p in @($MainExe, $LauncherExe, $Manifest)) {
+    if (-not (Test-Path $p)) {
+      throw "portable package input is missing: $p. Check that the self-contained publishes above succeeded."
+    }
+  }
+
   $zip = [System.IO.Compression.ZipFile]::Open($Dest, "Create")
   Add-Entry $zip (Get-Item $MainExe) ("WujieFan/" + (Split-Path $MainExe -Leaf))
   Add-Entry $zip (Get-Item $LauncherExe) ("WujieFan/" + (Split-Path $LauncherExe -Leaf))
@@ -155,12 +193,15 @@ function New-PortablePkg([string]$Dest, [string]$MainExe, [string]$LauncherExe, 
   Add-Entry $zip (Get-Item $Manifest) "WujieFan/WujieFan.integrity.json"
   Add-Docs $zip
   $zip.Dispose()
+
+  Write-Host ("      portable pkg: 3 app file(s): {0}, {1}, {2}" -f (Split-Path $MainExe -Leaf), (Split-Path $LauncherExe -Leaf), (Split-Path $Manifest -Leaf))
 }
 
 Write-Host "[5/5] pack"
 $fdZip = Join-Path $dist ("WujieFan-" + $Version + "-win-x64.zip")
 
-# 框架依赖包: 清单写在 publish 输出目录里, New-FrameworkPkg 会把目录里的文件整体打进去。
+# 框架依赖包: 清单写在 publish 输出目录里, New-FrameworkPkg 只按白名单取里面那三个文件,
+# 目录里若混进别的文件会直接报错而不是一起打进去。
 New-IntegrityManifest $fdDir @("WujieFan.exe", "WujieFan.Core.dll")
 New-FrameworkPkg $fdZip $fdDir
 

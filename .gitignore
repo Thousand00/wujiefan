@@ -14,6 +14,8 @@ _survey/
 _t/
 _tmp/
 _tmp2/
+_tmpbuild/
+_probe/
 work/
 *.log
 !docs/archive/**/*.log

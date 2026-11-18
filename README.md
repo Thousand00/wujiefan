@@ -52,11 +52,29 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 | `WujieFan-0.4.1-win-x64.zip` | 约 260 KiB | 需 .NET 8 桌面运行时 |
 | `WujieFan-0.4.1-win-x64-portable.zip` | 约 93.8 MiB | 免运行时，解压即用 |
 
-精确字节数与 sha256 见 Releases 页面（每个资产都标注 digest）；包内 `WujieFan.integrity.json`
-记录了主程序与 Core 的 sha256，启动器在每次登录自启前会比对它们。
+两种包解压后目录结构完全相同，一共 6 个文件：3 个程序文件 + 3 份文档。
+精确字节数与 sha256 见 Releases 页面（每个资产都标注 digest）。
+
+    WujieFan\
+      WujieFan.exe              主程序（管理员）
+      WujieFanLauncher.exe      自启动中转（普通权限）
+      WujieFan.integrity.json   启动器比对的 sha256 清单
+      README.md
+      THIRDPARTY.md
+      LICENSE
+
+两个 exe 都是**单文件发布**：`WujieFan.Core.dll`、嵌入的 `LpcIO.bin`、PawnIO 互操作代码
+全部并进 exe，目录里不会再有散落的 DLL 或 `.deps.json` / `.runtimeconfig.json`。
+框架依赖包把 .NET 8 运行时算作系统前提，便携包则把运行时也并进 exe（所以大很多）。
+
+包内 `WujieFan.integrity.json` 记录了 exe 的 sha256 与长度，启动器在每次登录自启前会比对。
+清单只收录磁盘上真实存在的文件 —— 单文件发布后 Core 已并进 exe，故清单里只有 exe 条目。
 
 自己打包：`powershell -File tools\make-release.ps1 -Version 0.4.1`（需提权，产物在 `dist\`）。
 版本号只在仓库根的 `Directory.Build.props` 定义，脚本会校验 `-Version` 与它一致，不一致直接报错。
+
+> 下文出现的 `tools\` 目录下的脚本都是**仓库内的开发与诊断工具，不随发布包分发**。
+> 发布包只含上面列出的 6 个文件；要用这些脚本请从仓库获取（`git clone` 后可直接运行）。
 
 ## 快速开始
 
@@ -155,6 +173,8 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 
 ### 6. 排查工具
 
+以下脚本都在**仓库的 `tools\` 目录**里，不随发布包分发（发布包只含程序与三份文档）。
+
     python tools\read-aida.py -n 3          # WujieFan 到底写没写、写的数对不对
     python tools\peek-overlay.py --full     # RTSS 实际渲染出来的图层文本
     python tools\peek-overlay.py --slots    # 列出全部 8 个 OSD 槽的占用者
@@ -175,7 +195,7 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
     src\WujieFan.Core\     核心库：读 EC / 机型校验 / AIDA 供数 / 设置 / 自启
     tests\EcReadSmoke\     命令行验证工具（含自启动往返测试）
     tests\FanControlLab\  风扇转速控制实验台（**不是产品**，见下方「风扇控制」）
-    tools\                 注入脚本、诊断脚本、RTSS 重启脚本
+    tools\                 注入脚本、诊断脚本、RTSS 重启脚本（仅仓库，不分发）
     docs\                  技术文档（先读 01-现状与技术总结.md）
     docs\archive\          失败实验的原始资料
     dist\app\              发布产物（不入库，可重建）
@@ -217,10 +237,17 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 
 运行时不进仓库：`dist/`、`bin/`、`obj/` 均在 `.gitignore` 里。自行构建（先退出正在运行的实例）：
 
-    dotnet publish src\WujieFan\WujieFan.csproj -c Release -o dist\app
-    dotnet publish src\WujieFan.Launcher\WujieFan.Launcher.csproj -c Release -o dist\app
+    dotnet publish src\WujieFan\WujieFan.csproj -c Release -r win-x64 --self-contained false `
+      -p:PublishSingleFile=true -p:DebugType=none -o dist\app
+    dotnet publish src\WujieFan.Launcher\WujieFan.Launcher.csproj -c Release -r win-x64 --self-contained false `
+      -p:PublishSingleFile=true -p:DebugType=none -o dist\app
 
-两个 exe 必须发布到同一个目录，否则自启动会报「缺少启动器文件」。
+两个 exe 必须发布到同一个目录，否则自启动会报「缺少启动器文件」。`--self-contained false`
+表示产物依赖系统已装 .NET 8 桌面运行时；要做免运行时的便携包，把两处都换成
+`--self-contained true -p:IncludeNativeLibrariesForSelfExtract=true` 再发布。
+
+`PublishSingleFile=true` 不能省：不加会退回多文件输出，目录里散出 `.dll` / `.deps.json`，
+打包脚本会直接报错拒绝出包。要一次产出两个 zip，直接用 `tools\make-release.ps1`。
 
 `backup/` 存的是改动前的 RTSS 原始配置（布局与 profile），出问题时用于还原，同样不入库，
 说明见 `backup/README.md`。
