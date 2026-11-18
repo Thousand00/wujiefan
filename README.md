@@ -1,179 +1,128 @@
-# WujieFan — 让笔记本 EC 风扇转速进入 RTSS 叠加层
+# WujieFan
 
-MECHREVO 无界14+（ARN39P-TF / Ryzen 7 7840HS / ITE EC 2.12 / BIOS 2.31）的风扇转速，
-从 EC 直接读取，并以两种方式呈现：
+把 MECHREVO 无界14+ 的 EC 风扇转速读出来，显示在独立界面里，并作为**可拖动图层**进入 RTSS 叠加层。
 
-1. **独立界面** —— 托盘程序实时显示风扇转速与 CPU 温度，可开机自启。
-2. **RTSS 叠加层** —— 作为 OverlayEditor 的**标准可拖动图层**出现，位置、字体、颜色都能在 OverlayEditor 里正常编辑。
-
-另外提供一个**风扇强冷模式**（0.3.0 新增）：一键把两个风扇拉到满转，用来压制持续高负载。
-只有「自动 / 强冷」两档，**只升不降** —— 理由见下方「风扇控制」。
-
-界面在 0.4.0 按设计稿重做：深色圆角无边框窗口、三列数据卡、整行开关、状态栏语义圆点，
-弹窗与托盘菜单也换成同色系（不再是白底系统对话框）。
+适用机型：MECHREVO 无界14+ / ARN39P-TF / Ryzen 7 7840HS / ITE EC 2.12 / BIOS 2.31。
 
 ![WujieFan 主界面](docs/images/ui-0.4.0-main.png)
 
-## 现在的状态
+## 为什么需要它
 
-| 能力 | 状态 |
-|---|---|
-| 从 EC 读风扇转速 | 完成，实测抖动 <1% |
-| 托盘界面 / 开机自启 | 完成，自启动真实往返测试通过 |
-| 开机自启后托盘图标正常显示 | 完成，见下方「为什么有两个 exe」 |
-| 托盘驻留 + 单实例唤回 | 完成，点 × 收进托盘，再次启动唤回原窗口 |
-| 进入 RTSS，且**可拖动编辑** | 完成，端到端实测通过 |
-| 一键注入图层（幂等 + 可回滚） | 完成 |
-| 风扇强冷模式（自动 / 强冷两档） | 完成，0.3.0 新增，含五条安全兜底 |
-| 深色界面 / 自绘弹窗 / 深色托盘菜单 | 完成，0.4.0 按设计稿重做 |
+RTSS 只认它自带的数据提供方（HAL / AIDA / HwInfo / MSI Afterburner / LHM / PresentMon 等），其中没有一个提供笔记本平台风扇转速。AIDA 共享内存是唯一「不需要改 RTSS 本身、也不需要往 RTSS 进程里塞插件」的入口。
 
-数据链路是：
+数据链路：
 
-    EC 寄存器 (0x181E / 0x1820)
+    EC 寄存器 0x181E / 0x1820
       → WujieFan（管理员权限，经 PawnIO + LpcIO.bin）
-      → 命名共享内存 AIDA64_SensorValues
+      → 共享内存 AIDA64_SensorValues
       → RTSS OverlayEditor 的 AIDA 数据源
       → %WUJIE Fan1 RPM% 宏 → 图层文字
 
-实际效果（右上角两段风扇转速就是注入的图层，可拖动、可改字体颜色）：
-
 ![RTSS 叠加层里的两个风扇转速](docs/images/overlay-fans.png)
-
-之所以绕道 AIDA 共享内存，是因为 RTSS 只认识它自带的那几个数据提供方（HAL / AIDA / HwInfo /
-MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平台风扇**。AIDA 通道是唯一
-「不需要改 RTSS 本身、也不需要往 RTSS 进程里塞插件」的入口。
 
 ## 下载
 
-不想自己编译就直接拿打包好的版本：[Releases](https://github.com/Thousand00/wujiefan/releases/latest)。
+打包好的版本在 [Releases](https://github.com/Thousand00/wujiefan/releases/latest)。
 
 | 包 | 大小 | 前提 |
 |---|---|---|
-| `WujieFan-0.5.1-win-x64.zip` | 约 242 KiB | 需 .NET 8 桌面运行时 |
-| `WujieFan-0.5.1-win-x64-portable.zip` | 约 90.8 MiB | 免运行时，解压即用 |
+| `WujieFan-<版本>-win-x64.zip` | 约 242 KiB | 需 .NET 8 桌面运行时 |
+| `WujieFan-<版本>-win-x64-portable.zip` | 约 90.8 MiB | 免运行时，解压即用 |
 
-两种包解压后目录结构完全相同，一共 6 个文件：3 个程序文件 + 3 份文档。
-精确字节数与 sha256 见 Releases 页面（每个资产都标注 digest）。
+两个包解压后都是 6 个文件：
 
-    WujieFan\
-      WujieFan.exe              主程序（管理员）
-      WujieFanLauncher.exe      自启动中转（普通权限）
-      WujieFan.integrity.json   启动器比对的 sha256 清单
-      README.md
-      THIRDPARTY.md
-      LICENSE
+    WujieFan.exe              主程序（需要管理员）
+    WujieFanLauncher.exe      自启动中转（普通权限）
+    WujieFan.integrity.json   启动器比对的 sha256 清单
+    README.md
+    THIRDPARTY.md
+    LICENSE
 
-两个 exe 都是**单文件发布**：`WujieFan.Core.dll`、嵌入的 `LpcIO.bin`、PawnIO 互操作代码
-全部并进 exe，目录里不会再有散落的 DLL 或 `.deps.json` / `.runtimeconfig.json`。
-框架依赖包把 .NET 8 运行时算作系统前提，便携包则把运行时也并进 exe（所以大很多）。
-
-包内 `WujieFan.integrity.json` 记录了 exe 的 sha256 与长度，启动器在每次登录自启前会比对。
-清单只收录磁盘上真实存在的文件 —— 单文件发布后 Core 已并进 exe，故清单里只有 exe 条目。
-
-自己打包：`powershell -File tools\make-release.ps1 -Version 0.5.1`（需提权，产物在 `dist\`）。
-版本号只在仓库根的 `Directory.Build.props` 定义，脚本会校验 `-Version` 与它一致，不一致直接报错。
-
-> 下文出现的 `tools\` 目录下的脚本都是**仓库内的开发与诊断工具，不随发布包分发**。
-> 发布包只含上面列出的 6 个文件；要用这些脚本请从仓库获取（`git clone` 后可直接运行）。
-
-## 快速开始
-
-### 1. 运行主程序
-
-    dist\app\WujieFan.exe
-
-会弹 UAC —— 这是必须的，PawnIO 驱动只对 SYSTEM 与 Administrators 开放。
-
-在设置里勾选「开机自动启动」后，下次登录时会出现一次 UAC 确认（点「是」即可），随后程序以管理员身份
-拉起并缩到托盘。这一次点击无法省略：既要管理员权限、又要托盘图标，就必须经过 AppInfo 提权。
+两个 exe 都是**单文件发布**：`WujieFan.Core.dll`、嵌入的 `LpcIO.bin`、PawnIO 互操作代码全部并进 exe，目录里不会再有散落的 DLL 或 `.deps.json` / `.runtimeconfig.json`。精确字节数与 sha256 见 Release 页面，每个资产都标注 digest。
 
 ### 为什么有两个 exe
 
-发布目录里除了 `WujieFan.exe` 还有 `WujieFanLauncher.exe`，两者必须放在一起。
+`WujieFanLauncher.exe` 不能删。任务计划程序拉起的进程会被放进一个带 UI 限制的 job 对象，其中的 `Shell_NotifyIcon(NIM_ADD)` 直接返回 `ERROR_ACCESS_DENIED(5)` —— 托盘图标不会出现，而且这个限制会被所有子进程继承，与任务本身是「最高权限」还是「普通权限」无关。
 
-原因是任务计划程序拉起的进程会被放进一个带 UI 限制的 job 对象里，其中的
-`Shell_NotifyIcon(NIM_ADD)` 直接返回 `ERROR_ACCESS_DENIED(5)` —— 托盘图标永远不出现，
-而且这个限制会被所有子进程继承，跟任务本身是「最高权限」还是「普通权限」无关。
+所以自启动必须两跳：
 
-所以自启动链拆成两跳：
+    计划任务（普通权限）→ WujieFanLauncher.exe（asInvoker）
+      → ShellExecuteEx("runas") → 经 AppInfo 提权 → WujieFan.exe（管理员）
 
-    计划任务（普通权限）→ WujieFanLauncher.exe（普通权限，asInvoker）
-      → ShellExecuteEx("runas") → 经 AppInfo 真正提权 → WujieFan.exe（管理员）
+只有 AppInfo 新建的进程才不会继承那个受限 job。反过来，让一个已经提权的进程再调 `runas` 无效：UAC 判定同级，退化成普通 `CreateProcess`，子进程照样留在受限 job 里。
 
-只有 AppInfo 新建的进程才不会继承那个受限 job。反过来，让一个**已经提权**的进程再调 `runas`
-是不行的：UAC 判定同级，退化成普通 `CreateProcess`，子进程照样留在受限 job 里。
+启动器只做一次进程创建，不读 EC、不碰硬件寄存器。缺了它，勾选开机自启动时会直接报错提示。
 
-启动器只做一次进程创建，不读 EC、不碰任何硬件寄存器。缺了它，勾选开机自启动时会直接报错提示。
+## 快速开始
 
-### 2. 让图层出现在 RTSS 里
+**运行**：解压后双击 `WujieFan.exe`，UAC 点「是」。管理员权限是必须的 —— PawnIO 设备对象的 SDDL 只放行 SYSTEM 与 Administrators。
 
-先确认 WujieFan 在跑、且在设置里勾选了「向 RTSS 提供数据」（默认开启），然后：
+**开机自启**：在「设置」里勾选。下次登录会出现一次 UAC 确认，之后每次登录都要点一次 —— 这个点击无法省略，既要管理员权限、又要托盘图标，就必须经过 AppInfo 提权。
 
-    python tools\add-wujie-layers.py "C:\Users\<你>\Desktop\default.ovl"
+**进入 RTSS**：先确认程序在跑、且设置里勾选了「向 RTSS 提供数据」，然后
 
-这会在布局里加入 3 个数据源（Fan1 / Fan2 / CPU 温度）和 2 个图层。
-之后**重启 RTSS** 才会生效（RTSS 没有热重载）：
-
+    python tools\add-wujie-layers.py "...\default.ovl"
     powershell -File tools\restart-rtss.ps1
 
-打开 OverlayEditor，即可拖动「CPU Fan RPM」/「GPU Fan RPM」两个图层。
+脚本幂等，重复运行只原地更新；`--revert` 撤销，`--dry-run` 预览，改之前自动备份为 `<文件名>.bak-wujie-<时间戳>`。RTSS 没有热重载，必须重启才生效。
 
-**这个脚本是幂等的**：重复运行不会重复添加，只会原地更新。
-想撤销就用 `--revert`，想先看看会改什么就用 `--dry-run`。改之前会自动备份成
-`<文件名>.bak-wujie-<时间戳>`。
+**关窗不退出**：点 × 只是收进托盘，读数与供数照常继续。双击托盘图标、托盘菜单「显示主窗口」、或再运行一次 exe 都能唤回（单实例，不会开第二个进程）。真退出用托盘菜单「退出 WujieFan」。
 
-### 3. 风扇控制（0.3.0 新增）
+## 设置
 
-主面板上的「强冷模式」勾选框只有两档（自启动、RTSS 供数与过热保护参数都在「设置」里，不占主面板）：
+主面板只放数据卡和「强冷模式」，其余在「设置」对话框里（主面板一行，或托盘菜单进入）：
+
+| 项 | 说明 |
+|---|---|
+| 开机自动启动 | 计划任务两跳拉起，见上方「为什么有两个 exe」 |
+| 向 RTSS 提供数据 | 写入 `AIDA64_SensorValues` 共享内存 |
+| 过热保护 · 温度阈值 | 70–100°C，默认 92 |
+| 过热保护 · 连续采样 | 1–60 次，默认 3 |
+
+默认值等于旧版本行为，不改设置就不会有任何变化。越界的值在加载时**回到默认**而不是夹到边界 —— 温度夹到 100 等于悄悄关掉保护。
+
+## 风扇控制
+
+只有「自动 / 强冷」两档。
 
 | 档位 | EC 状态 | 风扇 |
 |---|---|---|
 | 自动（默认） | 模式标志 `0x00` | 由固件按温度决定，日常 3000~4200 RPM |
 | 强冷 | 手动 PWM `184` + 标志 `0xDC` | 两个风扇满转，约 5700 RPM |
 
-**为什么不给降速：** EC 一旦进入手动模式，进程被 `taskkill /F` 之后它**不会自己回退**，
-标志和 PWM 值原样留着。允许任意调低，就等于允许把机器留在「比固件自己认为安全还低」的转速上 ——
-那是真的会烧。只往上升最坏的结果是吵，不会过热。
-
-强冷状态下连续测温，若**连续 3 次**采样都达到 92°C，会自动退回自动模式（正常满转时温度只会往下掉，这条几乎不会触发）。
-阈值与次数已可在设置里改（默认仍是 92°C / 3 次）；不改设置时，行为与 0.4.x 完全一致。
-
 ![勾选强冷后两个风扇满转](docs/images/fan-mode-strongcool.png)
 
-### 4. 界面（0.4.0 重做）
+**为什么不提供降速：** EC 一旦进入手动模式，进程被 `taskkill /F` 之后**不会自己回退**，标志和 PWM 值原样留着。允许任意调低，就等于允许把机器留在「比固件自己认为安全还低」的转速上。只往上升，最坏的结果是吵，不会过热。
 
-深色单窗口，432 宽（按 DPI 等比放大），无系统边框 —— 标题栏、最小化、关闭都是自绘的，
-圆角由 `DwmSetWindowAttribute(DWMWCP_ROUND)` + `Region` 双重保证。
+**过热保护：** 强冷状态下连续测温，若连续 N 次采样都达到阈值温度（默认 92°C / 3 次），自动退回自动模式。正常满转时温度只会往下掉，这条几乎不会触发。
+
+**残留风险：** 主程序被强杀时 EC 会停在手动满转（吵，但不超温）。三条恢复路径：下次启动时的归一化、托盘右键「恢复自动风扇」、关掉程序再重开。
+
+## 界面
+
+深色单窗口，432 宽（按 DPI 等比缩放），无系统边框 —— 标题栏、最小化、关闭都是自绘的，圆角由 `DwmSetWindowAttribute(DWMWCP_ROUND)` + `Region` 双重保证。
 
 | 区域 | 内容 |
 |---|---|
 | 标题栏 | 品牌图标 + WujieFan / 无界14+ 风扇转速 + 最小化 / 关闭 |
 | 机型行 | 厂商 型号 · BIOS 版本 · EC 版本（读不到时显示「机器信息不可读」） |
-| 数据卡 ×3 | Fan1 (CPU) / Fan2 (GPU) / CPU 温度；左侧小圆点：绿=正常、灰=停转、橙=读数不可信 |
-| 强冷行 | 「强冷模式」勾选框，右侧带「实际: 自动 / 强冷 / 异常标志」徽章 |
-| 设置行 | 主面板只留一个「设置」入口（自启动 / RTSS / 过热保护），点开是设置对话框 |
+| 数据卡 ×3 | Fan1 (CPU) / Fan2 (GPU) / CPU 温度；左侧圆点：绿=正常、灰=停转、橙=读数不可信 |
+| 强冷行 | 勾选框，右侧带「实际: 自动 / 强冷 / 异常标志」徽章 |
+| 设置行 | 「设置」入口 |
 | 状态栏 | 一行文字 + 语义色圆点（绿=正常、橙=警告、红=错误、无点=中性） |
 
-徽章显示的是**从 EC 回读的真实状态**，不是你点了什么 —— 切换失败会立刻回滚并把原因写进状态栏。
+徽章显示的是**从 EC 回读的真实状态**，不是点击结果 —— 切换失败会立刻回滚并把原因写进状态栏。
 
-托盘菜单与所有提示框也是深色自绘的：
+托盘菜单与提示框同色系自绘：
 
 ![深色托盘菜单](docs/images/ui-0.4.0-tray-menu.png)
 ![深色提示弹窗](docs/images/ui-0.4.0-dialog.png)
 
-设计稿在 `UI/WujieFan-UI-设计稿.html`（单页 HTML 原型，含主界面 / 状态图鉴 / 设计规范三视图），
-颜色 token、字号层级、控件映射都在里面。
+设计稿在 `UI/WujieFan-UI-设计稿.html`（单页 HTML 原型，含主界面 / 状态图鉴 / 设计规范三视图），颜色 token、字号层级、控件映射都在里面。
 
-### 5. 关掉窗口不会退出
+## 排查
 
-点右上角 × 只是收进托盘 —— 读数与供数照常继续，首次会弹一个气泡提示。
-
-- 唤回窗口：双击托盘图标，或右键 →「显示主窗口」，或**再运行一次 exe**（不会开第二个进程，而是把已有窗口叫到前台）。
-- 真的退出：右键托盘图标 →「退出 WujieFan」。
-
-### 6. 排查工具
-
-以下脚本都在**仓库的 `tools\` 目录**里，不随发布包分发（发布包只含程序与三份文档）。
+以下脚本都在**仓库的 `tools\` 目录**，不随发布包分发：
 
     python tools\read-aida.py -n 3          # WujieFan 到底写没写、写的数对不对
     python tools\peek-overlay.py --full     # RTSS 实际渲染出来的图层文本
@@ -181,81 +130,64 @@ MSI Afterburner / LHM / PresentMon…），而**没有一个提供笔记本平�
 
 顺序很重要：**先确认供数（read-aida），再看渲染（peek-overlay）**。
 
-如果数值都对、`peek-overlay` 里也有图层文本，但屏幕上就是看不见，那几乎一定是坐标跑出了渲染区。
-`.ovl` 的 `PositionX` 不是绝对像素，负值向右、数值过大会让图层静默消失（`-120` 就完全看不见，`-16` 正常）。
-详见 [docs/01-现状与技术总结.md](docs/01-现状与技术总结.md) §9A.10。
+若数值都对、`peek-overlay` 里也有图层文本，但屏幕上就是看不见，几乎一定是坐标跑出了渲染区：`.ovl` 的 `PositionX` 不是绝对像素，负值向右，数值过大会让图层静默消失（`-120` 完全看不见，`-16` 正常）。详见 [docs/01-现状与技术总结.md](docs/01-现状与技术总结.md) §9A.10。
 
 ## 目录
 
-    assets\                程序图标源文件
-    UI\                   界面设计稿（单页 HTML 原型）与两版图标源文件
-    src\WujieFan\          主程序（WinForms .NET 8 x64）
-    src\WujieFan\Ui\       界面：Theme / Controls / DarkDialog / MenuIcons / MainForm 与各控制器
-    src\WujieFan.Launcher\ 开机自启动的提权中转（asInvoker，只做一次 ShellExecuteEx）
-    src\WujieFan.Core\     核心库：读 EC / 机型校验 / AIDA 供数 / 设置 / 自启
-    tests\EcReadSmoke\     命令行验证工具（含自启动往返测试）
-    tests\FanControlLab\  风扇转速控制实验台（**不是产品**，见下方「风扇控制」）
-    tests\WujieFan.Core.Tests\  xUnit 单测（无硬件依赖）
-    tools\                 注入脚本、诊断脚本、RTSS 重启脚本（仅仓库，不分发）
-    docs\                  技术文档（先读 01-现状与技术总结.md）
-    docs\archive\          失败实验的原始资料
-    .github\workflows\     CI（守卫 + 构建/单测/冒烟）
-    dist\app\              发布产物（不入库，可重建）
-    backup\                改动前的 RTSS 原始配置，用于还原（不入库）
+    assets\                    程序图标源文件
+    UI\                        界面设计稿与两版图标源文件
+    src\WujieFan\              主程序（WinForms .NET 8 x64）
+    src\WujieFan\Ui\           界面与各控制器
+    src\WujieFan.Launcher\     自启动提权中转（asInvoker）
+    src\WujieFan.Core\         核心库：读 EC / 机型校验 / AIDA 供数 / 设置 / 自启
+    tests\EcReadSmoke\         命令行验证工具（含自启动往返测试）
+    tests\FanControlLab\       风扇转速实验台（不是产品，见下）
+    tests\WujieFan.Core.Tests\ xUnit 单测（无硬件依赖）
+    tools\                     开发与诊断脚本（仅仓库，不随包分发）
+    docs\                      技术文档
+    .github\workflows\         CI（守卫 + 构建/单测/冒烟）
+    dist\app\                  发布产物（不入库，可重建）
+    backup\                    改动前的 RTSS 原始配置，用于还原（不入库）
 
-版本号只在仓库根的 `Directory.Build.props` 定义，三个 csproj 不再各写一份。
+`tests\FanControlLab` 是**独立的实验程序**，能写任意 PWM（因此必须显式 `--apply` 并带看门狗），不被主程序调用，也不随发布包分发。
 
-## 技术文档
+## 构建
 
-- [docs/01-现状与技术总结.md](docs/01-现状与技术总结.md) —— EC 寄存器表、RTSS 内部机理、
-  六条数据通道的调研结论、失败的插件实验与真正原因、AIDA XML 解析器的硬性约束、
-  界面实现与截图方法论、56 条踩坑清单。
-
-## 关键前提与风险
-
-- **必须管理员权限**。PawnIO 设备对象的 SDDL 只放行 SYSTEM 与 Administrators。
-- **只支持这一款机型 + EC 2.12**。寄存器地址是从这个固件逆向出来的，机型或固件版本不符时
-  读出来的数字看着合理但完全错误 —— 所以程序会直接拒绝，而不是「尽力而为」。
-  确有需要可用 `ForceUnsupported` 强开，后果自负。
-- **写 EC 的地方只有「强冷模式」一处**，而且只写四个寄存器：两个手动 PWM 值（`0x021E`/`0x029E`）
-  和两个模式标志（`0x021F`/`0x029F`）。不碰风扇曲线表、不碰阈值、不改 NVRAM。
-  自动模式下程序完全不写 EC，只读。
-- **强冷模式的残留风险**：主程序被强杀时 EC 会停在手动满转（吵，但不超温）。三条恢复路径：
-  下次启动时的启动归一化、托盘右键「恢复自动风扇」、以及关掉程序再重开。
-  （曾经文档里写过 `WujieFan.exe --fan-auto`，但主程序从未实现这个参数，只认 `--tray`，已删。）
-  `tests\FanControlLab` 是**独立的实验程序**，能写任意 PWM（因此必须显式 `--apply` 并带看门狗），
-  它不会被主程序调用，也不随发布包分发。
-- **PawnIO 的 LpcIO.bin 模块是 LGPL 2.1**。本程序把它作为嵌入资源分发，因此同样适用 LGPL 2.1：
-  你可以替换它。源码与许可见 <https://github.com/namazso/PawnIO>。
-- RTSS 需要 7.3.x，且 `Plugins/Client/Overlays` 里的布局文件请自行备份。
-- 布局文件的编码是混合的（OEM 自带图层名是 GBK 字节），工具脚本用 latin-1 读写以保持字节不变，
-  **不要用记事本另存为 UTF-8**，否则原有中文图层名会变乱码。
-
-## 源码仓库
-
-<https://github.com/Thousand00/wujiefan> —— 默认分支 `master`。
-
-文档：
-
-- [现状与技术总结](docs/01-现状与技术总结.md) —— 硬件/固件事实、EC 寄存器表、RTSS 各数据通道调研、
-  程序结构、踩坑速查。要改这个项目或复现这套做法，先读它。
-
-运行时不进仓库：`dist/`、`bin/`、`obj/` 均在 `.gitignore` 里。自行构建（先退出正在运行的实例）：
+先退出正在运行的实例。
 
     dotnet publish src\WujieFan\WujieFan.csproj -c Release -r win-x64 --self-contained false `
       -p:PublishSingleFile=true -p:DebugType=none -o dist\app
     dotnet publish src\WujieFan.Launcher\WujieFan.Launcher.csproj -c Release -r win-x64 --self-contained false `
       -p:PublishSingleFile=true -p:DebugType=none -o dist\app
 
-两个 exe 必须发布到同一个目录，否则自启动会报「缺少启动器文件」。`--self-contained false`
-表示产物依赖系统已装 .NET 8 桌面运行时；要做免运行时的便携包，把两处都换成
-`--self-contained true -p:IncludeNativeLibrariesForSelfExtract=true` 再发布。
+两个 exe 必须发布到同一目录，否则自启动会报「缺少启动器文件」。`PublishSingleFile=true` 不能省：不加会退回多文件输出，目录里散出 `.dll` / `.deps.json`，打包脚本会直接报错拒绝出包。`--self-contained false` 表示依赖系统已装的 .NET 8 桌面运行时；要做免运行时的便携包，把两处都换成 `--self-contained true -p:IncludeNativeLibrariesForSelfExtract=true`。
 
-`PublishSingleFile=true` 不能省：不加会退回多文件输出，目录里散出 `.dll` / `.deps.json`，
-打包脚本会直接报错拒绝出包。要一次产出两个 zip，直接用 `tools\make-release.ps1`。
+一次产出两个 zip：
 
-`backup/` 存的是改动前的 RTSS 原始配置（布局与 profile），出问题时用于还原，同样不入库，
-说明见 `backup/README.md`。
+    powershell -File tools\make-release.ps1 -Version <版本号>
+
+版本号只在仓库根的 `Directory.Build.props` 定义，三个 csproj 不再各写一份；脚本会校验 `-Version` 与它一致，不一致直接报错。
+
+回归检查（免管理员）：
+
+    pwsh -File tools\verify.ps1
+
+运行时不进仓库：`dist/`、`bin/`、`obj/` 均在 `.gitignore` 里。
+
+## 前提与风险
+
+- **必须管理员权限**。PawnIO 设备对象的 SDDL 只放行 SYSTEM 与 Administrators。
+- **只支持无界14+ / ARN39P-TF + EC 2.12**。寄存器地址是从这个固件逆向出来的，机型或固件版本不符时读出来的数字看着合理但完全错误 —— 所以程序直接拒绝，而不是「尽力而为」。确有需要可用 `ForceUnsupported` 强开，后果自负。
+- **写 EC 的地方只有「强冷模式」一处**，只写四个寄存器：两个手动 PWM 值（`0x021E`/`0x029E`）和两个模式标志（`0x021F`/`0x029F`）。不碰风扇曲线表、不碰阈值、不改 NVRAM。自动模式下完全不写 EC，只读。
+- **RTSS 需 7.3.x**，`Plugins\Client\Overlays` 里的布局文件请自行备份。
+- **布局文件的编码是混合的**（OEM 自带图层名是 GBK 字节），工具脚本用 latin-1 读写以保持字节不变。**不要用记事本另存为 UTF-8**，否则原有中文图层名会变乱码。
+- **`LpcIO.bin` 是 LGPL 2.1**，本程序把它作为嵌入资源分发，因此同样适用 LGPL 2.1：你可以替换它。源码与许可见 <https://github.com/namazso/PawnIO>。
+
+## 文档
+
+- [docs/01-现状与技术总结.md](docs/01-现状与技术总结.md) —— 硬件/固件事实、EC 寄存器表、RTSS 各数据通道调研结论、失败的插件实验与真正原因、AIDA XML 解析器的硬性约束、界面实现与截图方法论、踩坑速查。要改这个项目或复现这套做法，先读它。
+- [docs/02-路线规划与优先级.md](docs/02-路线规划与优先级.md) —— 版本规划、取舍与风险台账。
+- [docs/03-实机验收手册.md](docs/03-实机验收手册.md) —— 写 EC 与自启链路的实机验收步骤。
 
 ## 许可
 
