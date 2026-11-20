@@ -108,7 +108,11 @@ internal sealed class GlobalHotKey : IDisposable
 
     /// <summary>
     /// 只用来收 WM_HOTKEY 的窗口: 从不 Show, 所以看不见、不进任务栏。
-    /// 用 STATIC 类是因为它够简单, 且不需要注册自己的窗口类。
+    ///
+    /// 这里刻意**不**指定 ClassName。写成 "STATIC" 之类的系统预定义类会踩一个
+    /// 隐蔽的坑: WinForms 的 NativeWindow 会去 RegisterClass 这个名字, 而系统类
+    /// 早已注册过, 于是抛 Win32Exception(1410 类已存在) —— 且异常发生在主窗口
+    /// 构造期间, 整个程序启动即崩。留空则 WinForms 自己生成一个唯一类名。
     /// </summary>
     private sealed class HiddenMessageWindow : NativeWindow
     {
@@ -120,7 +124,6 @@ internal sealed class GlobalHotKey : IDisposable
             CreateHandle(new CreateParams
             {
                 Caption = "WujieFan.GlobalHotKey",
-                ClassName = "STATIC",
                 Style = 0,
                 X = 0,
                 Y = 0,
