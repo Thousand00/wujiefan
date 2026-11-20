@@ -88,6 +88,15 @@ public sealed class AppSettings
     /// <summary>连续采样次数的可设上界。10000ms 轮询下 60 次已是 1 分钟, 再大就没有保护意义了。</summary>
     public const int EmergencyHoldSamplesMax = 60;
 
+    /// <summary>
+    /// 切换强冷模式的全局组合键, 写法见 <see cref="HotKeyCombo.ToSettingString"/> (例如 "Ctrl+Alt+F9")。
+    ///
+    /// 空串表示没设, 此时不注册任何全局热键 —— 这是默认值, 与 0.5.2 及更早的行为完全一致:
+    /// "不设就什么都不变"。存字符串而不是结构体, 一是让手改配置文件的人看得懂,
+    /// 二是老版本读到它只是多出一个不认识的字段, 而不是反序列化失败。
+    /// </summary>
+    public string StrongCoolHotKey { get; set; } = "";
+
     /// <summary>配置文件自身的结构版本。缺失视为 0 (0.4.0 及更早写的文件)。</summary>
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
 
@@ -135,6 +144,7 @@ public sealed class AppSettings
         FanMode = FanMode.Auto,
         EmergencyTemperatureC = EcRegisters.EmergencyTemperatureC,
         EmergencyHoldSamples = EcRegisters.EmergencyHoldSamples,
+        StrongCoolHotKey = "",
         SchemaVersion = CurrentSchemaVersion,
     };
 
@@ -257,6 +267,28 @@ public sealed class AppSettings
         {
             parsed.EmergencyHoldSamples = EcRegisters.EmergencyHoldSamples;
             changed = true;
+        }
+
+        // 全局热键。三种情况:
+        //   - 空 / 没这个字段: 合法, 表示用户没设, 什么都不做;
+        //   - 解析得出来: 合法, 但统一改写成规范写法, 免得 "ctrl+alt+f9" 与
+        //     "Ctrl+Alt+F9" 在文件里各存一份, 比较与去重都要多一层;
+        //   - 解析不出来: 手改坏了。**当成没设**并把字段清空 —— 留着一个注册不了的
+        //     字符串, 界面就会显示一个"看起来设了、其实不生效"的快捷键。
+        //     这里不清成默认值而是清成空串, 因为热键的"默认"就是没有。
+        if (!HotKeyCombo.TryParse(parsed.StrongCoolHotKey, out HotKeyCombo? hotKey))
+        {
+            parsed.StrongCoolHotKey = "";
+            changed = true;
+        }
+        else if (hotKey is not null)
+        {
+            string canonical = hotKey.ToSettingString();
+            if (!string.Equals(canonical, parsed.StrongCoolHotKey, StringComparison.Ordinal))
+            {
+                parsed.StrongCoolHotKey = canonical;
+                changed = true;
+            }
         }
 
         if (parsed.SchemaVersion < CurrentSchemaVersion)

@@ -131,6 +131,39 @@ internal sealed class FanModeController
     }
 
     /// <summary>
+    /// 全局热键触发的切换。目标与点击那一行一致, 但有两处不同:
+    ///
+    /// 1) 依据是 <c>_strongCoolIntent</c> 而不是勾选框 —— 热键可能在窗口收进托盘、
+    ///    甚至从未显示过的时候按下, 那时勾选框未必被 Observe 校准到位。
+    /// 2) 不弹模态对话框 (userInitiated: false)。用户按热键时人很可能在别的程序里,
+    ///    抢焦点弹窗比什么都不做更打扰; 结果由调用方用托盘气泡说明。
+    /// </summary>
+    /// <returns>是否达到目标状态, 以及一句可以拿去显示的话。</returns>
+    public (bool Ok, string Message) ToggleFromHotKey()
+    {
+        if (_busy) return (false, "正在切换风扇模式, 请稍候再按。");
+
+        // 设备没开时要单独说清楚。SetMode 在这种情况下一声不响地返回,
+        // 若不在这里拦, 用户会收到"切换失败" —— 听起来像硬件坏了。
+        FanReader? reader = _reader();
+        if (reader is null || !reader.IsOpen)
+            return (false, "EC 设备还没打开, 现在不能切换。");
+
+        // 拿当前意图取反: 强冷中 -> 交还自动; 自动中 -> 进强冷。
+        FanMode target = _strongCoolIntent ? FanMode.Auto : FanMode.StrongCool;
+
+        SetMode(target, userInitiated: false);
+
+        // SetMode 失败时会把意图清成 false, 所以"意图是否等于目标"就是成功与否。
+        bool reached = _strongCoolIntent == (target == FanMode.StrongCool);
+        if (!reached) return (false, "风扇模式切换失败。");
+
+        return target == FanMode.StrongCool
+            ? (true, "强冷已开启: 两个风扇满转。")
+            : (true, "已交还自动模式, 由 EC 按温度曲线调速。");
+    }
+
+    /// <summary>
     /// 启动时把 EC 拉到"设置里记着的模式"。
     ///
     /// 这条规则同时覆盖了几种历史残留:

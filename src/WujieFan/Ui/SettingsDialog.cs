@@ -175,8 +175,24 @@ internal sealed class SettingsDialogForm : Form
     private Rectangle _tempPillRect;
     private Rectangle _holdPillRect;
 
+    private Rectangle _hotKeySectionRect;
+    private Rectangle _hotKeyCaptionRect;
+    private Rectangle _hotKeyPillRect;
+    private Rectangle _hotKeyRecordRect;
+    private Rectangle _hotKeyNoteRect;
+
     private bool _hoverSave;
     private bool _hoverCancel;
+    private bool _hoverRecord;
+
+    /// <summary>当前的热键设置串 (规范写法, 空串 = 没设)。只在 Commit 时写回 settings。</summary>
+    private string _hotKey = "";
+
+    /// <summary>正在等用户按键。</summary>
+    private bool _recording;
+
+    /// <summary>录制过程中要说的话 (例如"需要至少一个修饰键"), 画在说明行上。</summary>
+    private string _recordHint = "";
 
     public SettingsDialogForm(AppSettings settings, AutoStartState autoStart)
     {
@@ -184,6 +200,9 @@ internal sealed class SettingsDialogForm : Form
         _autoStart = autoStart;
         _initialTemp = settings.EmergencyTemperatureC;
         _initialHold = settings.EmergencyHoldSamples;
+
+        // 存的是规范写法, 直接拿来显示即可; 万一有人手改坏了, Load() 已经清成空串。
+        _hotKey = settings.StrongCoolHotKey ?? "";
 
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.CenterParent;
@@ -304,13 +323,29 @@ internal sealed class SettingsDialogForm : Form
         _rtssRow.Bounds = new Rectangle(rowX, y, rowW, rowH);
         y += rowH + Dpi.Px(this, 18);
 
-        _sectionRect = new Rectangle(padX, y, inner, Dpi.Px(this, 20));
-        y = _sectionRect.Bottom + Dpi.Px(this, 6);
-
         int boxH = Dpi.Px(this, DesignBoxHeight);
         int boxW = Dpi.Px(this, 56);
         int captionW = Dpi.Px(this, 88);
         int lineH = Dpi.Px(this, 18);
+
+        // 全局快捷键小节: 左边是当前键位的显示框, 右边一个"录制"按钮。
+        _hotKeySectionRect = new Rectangle(padX, y, inner, Dpi.Px(this, 20));
+        y = _hotKeySectionRect.Bottom + Dpi.Px(this, 6);
+
+        int recordW = Dpi.Px(this, 72);
+        int recordGap = Dpi.Px(this, 8);
+
+        _hotKeyCaptionRect = new Rectangle(padX, y + (boxH - lineH) / 2, captionW, lineH);
+        _hotKeyPillRect = new Rectangle(padX + captionW - Dpi.Px(this, 4), y,
+            inner - captionW + Dpi.Px(this, 4) - recordW - recordGap, boxH);
+        _hotKeyRecordRect = new Rectangle(padX + inner - recordW, y, recordW, boxH);
+        y += boxH + Dpi.Px(this, 6);
+
+        _hotKeyNoteRect = new Rectangle(padX, y, inner, Dpi.Px(this, 18));
+        y += Dpi.Px(this, 18) + Dpi.Px(this, 16);
+
+        _sectionRect = new Rectangle(padX, y, inner, Dpi.Px(this, 20));
+        y = _sectionRect.Bottom + Dpi.Px(this, 6);
 
         _tempCaptionRect = new Rectangle(padX, y + (boxH - lineH) / 2, captionW, lineH);
         _tempPillRect = new Rectangle(padX + captionW - Dpi.Px(this, 4), y, boxW, boxH);
@@ -368,6 +403,24 @@ internal sealed class SettingsDialogForm : Form
         TextRenderer.DrawText(g, "设置", Theme.DlgTitle, _titleRect,
             Theme.Text1, TextFormatFlags.Left | TextFormatFlags.NoPadding);
 
+        // 全局快捷键小节
+        TextRenderer.DrawText(g, "全局快捷键", Theme.RowLabel, _hotKeySectionRect,
+            Theme.Text1, TextFormatFlags.Left | TextFormatFlags.NoPadding);
+
+        TextRenderer.DrawText(g, "强冷模式", Theme.RowLabel, _hotKeyCaptionRect,
+            Theme.Text2, TextFormatFlags.Left | TextFormatFlags.NoPadding);
+
+        DrawPill(g, _hotKeyPillRect);
+        DrawHotKeyValue(g);
+
+        // "录制"按钮: 录制中换成强调色, 让人一眼看出现在在等按键
+        DrawButton(g, _hotKeyRecordRect, _recording ? "按组合键…" : "录制",
+            primary: _recording, _hoverRecord);
+
+        TextRenderer.DrawText(g, _recordHint, Theme.RowHint, _hotKeyNoteRect,
+            _recordHint.Length > 0 ? Theme.Warn : Theme.Text3,
+            TextFormatFlags.Left | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
+
         TextRenderer.DrawText(g, "过热保护", Theme.RowLabel, _sectionRect,
             Theme.Text1, TextFormatFlags.Left | TextFormatFlags.NoPadding);
 
@@ -414,6 +467,124 @@ internal sealed class SettingsDialogForm : Form
         g.DrawPath(pen, path);
     }
 
+    /// <summary>
+    /// 快捷键显示框里的内容: 没设 -> 灰色提示; 录制中 -> 只显示已按住的修饰键。
+    /// 录制中不显示"上一次的值", 否则用户按到一半会以为已经录好了。
+    /// </summary>
+    private void DrawHotKeyValue(Graphics g)
+    {
+        Rectangle rect = _hotKeyPillRect;
+        rect.Inflate(-Dpi.Px(this, 8), 0);
+
+        string text;
+        Color color;
+
+        if (_recording)
+        {
+            HotKeyModifiers held = ModifierKeysHeld();
+            text = HotKeyCombo.ModifiersToString(held);
+            if (text.Length == 0) text = "请按下组合键…";
+            color = Theme.Accent;
+        }
+        else if (_hotKey.Length > 0)
+        {
+            text = _hotKey;
+            color = Theme.Text1;
+        }
+        else
+        {
+            text = "未设置";
+            color = Theme.Text3;
+        }
+
+        TextRenderer.DrawText(g, text, Theme.RowLabel, rect, color,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter
+            | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
+    }
+
+    /// <summary>当前物理按住的修饰键。用 Control.ModifierKeys 而不是自己记账, 松开也不会漏。</summary>
+    private static HotKeyModifiers ModifierKeysHeld()
+    {
+        Keys keys = Control.ModifierKeys;
+        HotKeyModifiers held = HotKeyModifiers.None;
+
+        if ((keys & Keys.Control) != 0) held |= HotKeyModifiers.Control;
+        if ((keys & Keys.Alt) != 0) held |= HotKeyModifiers.Alt;
+        if ((keys & Keys.Shift) != 0) held |= HotKeyModifiers.Shift;
+
+        // Win 键不在 Control.ModifierKeys 里 (WinForms 认为它属于系统), 只能问系统。
+        if ((GetAsyncKeyState(VkLWin) & 0x8000) != 0
+            || (GetAsyncKeyState(VkRWin) & 0x8000) != 0)
+            held |= HotKeyModifiers.Win;
+
+        return held;
+    }
+
+    private const int VkLWin = 0x5B;
+    private const int VkRWin = 0x5C;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int vKey);
+
+    /// <summary>开始录制。先把焦点从输入框拿走, 否则数字框会抢走按键。</summary>
+    private void StartRecording()
+    {
+        _recording = true;
+        _recordHint = "按下想要的组合键, Esc 取消。";
+        ActiveControl = null;
+        Invalidate();
+    }
+
+    private void StopRecording(string hint)
+    {
+        _recording = false;
+        _recordHint = hint;
+        Invalidate();
+    }
+
+    /// <summary>
+    /// 录制时吃掉的按键。返回 true 表示"这一下归我, 别再往下传"。
+    ///
+    /// 只认带修饰键的组合: 单按一个字母做全局热键会把正常打字全抢走,
+    /// 而且 RegisterHotKey 本身也不允许。
+    /// </summary>
+    private bool HandleRecordingKey(KeyEventArgs e)
+    {
+        if (!_recording) return false;
+
+        // 只按下修饰键: 先不结账, 让界面把"已经按住了什么"显示出来。
+        if (e.KeyCode is Keys.ControlKey or Keys.Menu or Keys.ShiftKey
+            or Keys.LWin or Keys.RWin)
+        {
+            Invalidate();
+            return true;
+        }
+
+        if (e.KeyCode == Keys.Escape)
+        {
+            StopRecording("已取消录制, 原来的快捷键不变。");
+            return true;
+        }
+
+        HotKeyCombo candidate = new()
+        {
+            Modifiers = ModifierKeysHeld(),
+            VirtualKey = e.KeyValue,
+        };
+
+        string? problem = HotKeyCombo.DescribeProblem(candidate);
+        if (problem is not null)
+        {
+            _recordHint = problem;
+            Invalidate();
+            return true;
+        }
+
+        _hotKey = candidate.ToSettingString();
+        StopRecording("");
+        return true;
+    }
+
     private void DrawButton(Graphics g, Rectangle rect, string text, bool primary, bool hover)
     {
         if (rect.IsEmpty) return;
@@ -440,24 +611,27 @@ internal sealed class SettingsDialogForm : Form
     {
         bool hs = _saveRect.Contains(e.Location);
         bool hc = _cancelRect.Contains(e.Location);
+        bool hr = _hotKeyRecordRect.Contains(e.Location);
 
-        if (hs != _hoverSave || hc != _hoverCancel)
+        if (hs != _hoverSave || hc != _hoverCancel || hr != _hoverRecord)
         {
             _hoverSave = hs;
             _hoverCancel = hc;
+            _hoverRecord = hr;
             Invalidate();
         }
 
-        Cursor = (hs || hc) ? Cursors.Hand : Cursors.Default;
+        Cursor = (hs || hc || hr) ? Cursors.Hand : Cursors.Default;
         base.OnMouseMove(e);
     }
 
     protected override void OnMouseLeave(EventArgs e)
     {
-        if (_hoverSave || _hoverCancel)
+        if (_hoverSave || _hoverCancel || _hoverRecord)
         {
             _hoverSave = false;
             _hoverCancel = false;
+            _hoverRecord = false;
             Invalidate();
         }
 
@@ -469,6 +643,11 @@ internal sealed class SettingsDialogForm : Form
     {
         if (e.Button != MouseButtons.Left) return;
 
+        if (_hotKeyRecordRect.Contains(e.Location)) { StartRecording(); return; }
+
+        // 点别处就结束录制: 用户已经不想录了, 别让它一直挂着等按键。
+        if (_recording) StopRecording("已取消录制, 原来的快捷键不变。");
+
         if (_saveRect.Contains(e.Location)) { Commit(); return; }
         if (_cancelRect.Contains(e.Location)) { Cancel(); return; }
 
@@ -477,6 +656,14 @@ internal sealed class SettingsDialogForm : Form
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
+        // 录制优先于一切: 这时 Esc 是"取消录制"而不是"关窗", Enter 也不能拿去保存。
+        if (HandleRecordingKey(e))
+        {
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            return;
+        }
+
         // KeyPreview 让这里先拿到按键: 输入框是多行的, 不拦的话 Enter 会被它吃掉变成换行。
         if (e.KeyCode == Keys.Escape)
         {
@@ -497,6 +684,13 @@ internal sealed class SettingsDialogForm : Form
         base.OnKeyDown(e);
     }
 
+    /// <summary>录制中按下修饰键不产生 KeyDown 的"值", 但要让界面刷新, 所以顺带处理 KeyUp。</summary>
+    protected override void OnKeyUp(KeyEventArgs e)
+    {
+        if (_recording) Invalidate();
+        base.OnKeyUp(e);
+    }
+
     private void Commit()
     {
         // 保存前再归一化一次: 用户可能输了值就直接按 Enter, 没经过 Leave。
@@ -508,6 +702,9 @@ internal sealed class SettingsDialogForm : Form
         _settings.PublishToRtss = _rtssRow.Checked;
         _settings.EmergencyTemperatureC = int.Parse(_tempBox.Text);
         _settings.EmergencyHoldSamples = int.Parse(_holdBox.Text);
+
+        // 录制到一半直接点保存: 保留原来那个, 不要把半成品写进去。
+        _settings.StrongCoolHotKey = _hotKey;
 
         // 锁定态下这一行是 Enabled=false, 用户改不了, 回写的就是原值, 等于没动。
         _autoStart.Enabled = _autoStartRow.Checked;

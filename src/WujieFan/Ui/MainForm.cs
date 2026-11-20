@@ -49,6 +49,9 @@ public sealed class MainForm : Form
     private readonly FanModeController _mode;
     private readonly FanPollingController _polling;
 
+    /// <summary>全局快捷键宿主。整段生命周期里只建一个, 换键位就重新注册, 不重建窗口。</summary>
+    private readonly GlobalHotKey _hotKey;
+
     private bool _exiting;
 
     /// <summary>窗口已进入销毁流程。休眠恢复回调可能晚到, 用它挡住。</summary>
@@ -61,6 +64,11 @@ public sealed class MainForm : Form
 
         _publisher = new RtssPublisher(_settings, SetStatus);
         _tray = new TrayHost(this, _settings, SetStatus, SaveSettingsQuietly);
+
+        // 热键回调直接在 UI 线程上执行 (WM_HOTKEY 投递到我们自己建的隐藏窗口),
+        // 但按下那一刻可能正在跑别的消息处理, 所以仍然排到消息队列尾部再切模式。
+        _hotKey = new GlobalHotKey();
+        _hotKey.Pressed += OnHotKeyPressed;
 
         // 三者互相看得见, 但构造顺序不能成环: 用 Func 延迟取值,
         // 读的是"当时那个实例", 而不是构造那一刻的快照。
@@ -124,14 +132,14 @@ public sealed class MainForm : Form
         _strongCoolRow.CheckedChanged += (_, _) => _mode.OnUserToggle();
 
         _settingsRow.Text = "设置";
-        _settingsRow.Hint = "(自启动 / RTSS / 过热保护)";
+        _settingsRow.Hint = "(自启动 / RTSS / 过热保护 / 快捷键)";
         _settingsRow.Click += (_, _) => OpenSettings();
 
         _footnoteLabel.AutoSize = false;
         _footnoteLabel.BackColor = Theme.WinBg;
         _footnoteLabel.ForeColor = Theme.Text3;
         _footnoteLabel.Font = Theme.Footnote;
-        _footnoteLabel.Text = "自启动 / RTSS 供数 / 过热保护都在「设置」里; 点 × 不收进程, 只收进托盘继续读数与供数。";
+        _footnoteLabel.Text = "自启动 / RTSS 供数 / 过热保护 / 全局快捷键都在「设置」里; 点 × 不收进程, 只收进托盘继续读数与供数。";
 
         _statusBar.SetStatus("正在初始化...", Theme.Text2, Color.Transparent);
 
@@ -335,8 +343,14 @@ public sealed class MainForm : Form
             UiLog("AppSettings normalized: " + why);
         }
 
+        // 全局热键注册在这里, 有两个原因:
+        //   1. 设备已经打开并轮询过一轮, 按下时 reader 一定就绪;
+        //   2. 注册失败要写状态栏, 放在降级/归一化提示之后才不会被盖掉。
+        ApplyHotKey();
+
         // 开机自启动时不弹窗打扰, 直接进托盘。手动启动则正常显示窗口,
         // 用户点关闭键时再按 MinimizeToTray 决定是缩托盘还是退出。
+
         if (_startMinimized) HideToTray();
     }
 
@@ -345,6 +359,48 @@ public sealed class MainForm : Form
         HardwareIdentity id = HardwareIdentity.Read();
         if (!id.WasRead) return "机器信息不可读";
         return $"{id.SystemManufacturer} {id.SystemProductName} · BIOS {id.BiosVersion} · EC {id.EcVersionText}";
+    }
+
+    // ---------------------------------------------------------------- 全局热键
+
+    /// <summary>
+    /// 按设置重新注册全局热键。失败要说出来, 但不要让程序走不下去 ——
+    /// 热键只是快捷方式, 主界面上的开关仍然可用。
+    /// </summary>
+    private void ApplyHotKey()
+    {
+        HotKeyCombo.TryParse(_settings.StrongCoolHotKey, out HotKeyCombo? combo);
+
+        if (!_hotKey.TryRegister(combo, out string? error))
+        {
+            // 注册失败时把设置也清掉: 留着它会让用户以为下次启动会生效, 实际上
+            // 每次启动都会因为同样的原因失败。
+            _settings.StrongCoolHotKey = "";
+            SaveSettingsQuietly("清掉注册失败的快捷键");
+
+            SetStatus("全局快捷键不可用: " + error, Theme.Warn);
+            UiLog("GlobalHotKey: " + error);
+        }
+    }
+
+    /// <summary>
+    /// 热键被按下。用 BeginInvoke 排到消息队列尾部, 而不是就地处理:
+    /// WM_HOTKEY 可能在别的消息处理过程中到达, 就地切模式等于在别人的调用栈里写 EC。
+    /// </summary>
+    private void OnHotKeyPressed(object? sender, EventArgs e)
+    {
+        PostToUi(() =>
+        {
+            if (_disposedUi || IsDisposed || _exiting) return;
+
+            (bool ok, string message) = _mode.ToggleFromHotKey();
+
+            // 用户此时很可能在看别的程序, 甚至主窗口收在托盘里, 所以状态栏之外
+            // 再补一条托盘气泡 —— 否则按下去像没反应。
+            _tray.ShowBalloon(message, ok ? Theme.Ok : Theme.Warn);
+
+            if (!ok) SetStatus(message, Theme.Warn);
+        });
     }
 
     // ---------------------------------------------------------------- 设置
@@ -373,7 +429,19 @@ public sealed class MainForm : Form
             state.Enabled = _autoStart.IsEnabled();
         }
 
-        if (!SettingsDialog.Show(this, _settings, state)) return;
+        // 打开弹窗之前先注销热键。两个原因:
+        //   1. 用户在里面点"录制"要按组合键, 若当前组合键仍然注册着, 按下去会先被系统
+        //      派发成一次真实的模式切换 —— 明明只是想改键位, 风扇却真的切了;
+        //   2. 录制时希望按键老老实实进到弹窗的键盘消息里, 而不是被 WM_HOTKEY 截走。
+        // 无论用户最后是按保存还是取消, 关掉弹窗后都会按当前设置重新注册。
+        _hotKey.Unregister();
+
+        if (!SettingsDialog.Show(this, _settings, state))
+        {
+            // 取消了: 设置没变, 但热键在打开弹窗时被注销了, 按原样装回去。
+            ApplyHotKey();
+            return;
+        }
 
         // 弹窗只改了对象里的值, 落盘在这里。失败要让用户看见:
         // 悄悄失败等于让他以为设置生效了, 下次启动又变回去。
@@ -384,11 +452,17 @@ public sealed class MainForm : Form
             DarkDialog.Show(this, "设置",
                 "设置写入配置文件失败, 本次修改不会生效。请检查 %LOCALAPPDATA%\\WujieFan 是否可写。",
                 DarkDialog.Tone.Error);
+            // 设置没落盘, 热键按内存里(旧的)值装回去, 别让它就这么一直哑着。
+            ApplyHotKey();
             return;
         }
 
         // RTSS 供数开关是纯本地状态, 立刻生效。
         _publisher.Apply();
+
+        // 热键换了就重新注册。放在落盘之后: 注册失败时 ApplyHotKey 会把设置里的
+        // 那一项清空并再存一次, 得先保证新值已经写进去了。
+        ApplyHotKey();
 
         // 开机自启要动系统: 按用户选的目标态执行, 失败则把界面拉回真实状态。
         bool wantAutoStart = state.Enabled && !state.Locked;
@@ -587,6 +661,10 @@ public sealed class MainForm : Form
 
             _publisher.Dispose();
             _tray.Dispose();
+
+            // 注销全局热键。进程退出后系统会自己回收, 但程序里有非正常退出路径
+            // (系统注销、电源事件), 那几条路不走 FormClosed, 在这里兜住。
+            _hotKey.Dispose();
         }
 
         base.Dispose(disposing);

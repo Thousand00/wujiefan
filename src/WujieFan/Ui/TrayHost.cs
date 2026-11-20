@@ -19,6 +19,9 @@ internal sealed class TrayHost : IDisposable
 
     private readonly List<Image> _menuImages = new();
 
+    /// <summary>气泡显示时长。热键切换的结果很短, 3 秒够看一眼又不会挡着别的东西。</summary>
+    private const int BalloonMs = 3000;
+
     private NotifyIcon? _icon;
     private bool _hintShown;
     private bool _hiding;
@@ -106,6 +109,27 @@ internal sealed class TrayHost : IDisposable
         {
             _hiding = false;
         }
+    }
+
+    /// <summary>
+    /// 弹一条托盘气泡。用于用户没在看主窗口时给他一个反馈 (比如按了全局热键)。
+    /// 没有托盘图标时静默返回 —— 这种情况下调用方通常已经写了状态栏, 不必再吵。
+    /// </summary>
+    public void ShowBalloon(string text, Color tone)
+    {
+        if (_icon is null || string.IsNullOrWhiteSpace(text)) return;
+
+        string title = BalloonTitleFor(tone);
+        _icon.BalloonTipTitle = title;
+        _icon.BalloonTipText = text;
+        _icon.ShowBalloonTip(BalloonMs);
+    }
+
+    private static string BalloonTitleFor(Color tone)
+    {
+        if (tone == Theme.Ok) return "强冷模式已切换";
+        if (tone == Theme.Warn || tone == Theme.Err) return "操作未完成";
+        return "WujieFan";
     }
 
     private ContextMenuStrip BuildMenu(
