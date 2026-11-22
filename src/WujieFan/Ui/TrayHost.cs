@@ -7,15 +7,13 @@ namespace WujieFan.Ui;
 /// 托盘图标与"收进托盘"这件事。窗口生命周期不归它管, 只负责图标、菜单、气泡提示,
 /// 以及把菜单点击转成上层给的回调 (显示窗口 / 交还自动 / 重新检测 / 退出)。
 ///
-/// 单独成类的原因不是它大, 而是它有两处容易写错且后果难查的状态: 图标建失败时必须改
-/// 设置并落盘 (否则下次启动还会按同一路径失败), 以及菜单图标是现画的位图、得有人释放。
+/// 单独成类的原因不是它大, 而是它有两处容易写错且后果难查的状态: 图标建失败时只剩
+/// 本次会话可用 (调用方据此决定关窗是退出还是隐藏), 以及菜单图标是现画的位图、得有人释放。
 /// </summary>
 internal sealed class TrayHost : IDisposable
 {
     private readonly Form _form;
-    private readonly AppSettings _settings;
     private readonly Action<string, Color> _setStatus;
-    private readonly Action<string> _saveSettingsQuietly;
 
     private readonly List<Image> _menuImages = new();
 
@@ -27,16 +25,10 @@ internal sealed class TrayHost : IDisposable
     private bool _hiding;
 
 
-    public TrayHost(
-        Form form,
-        AppSettings settings,
-        Action<string, Color> setStatus,
-        Action<string> saveSettingsQuietly)
+    public TrayHost(Form form, Action<string, Color> setStatus)
     {
         _form = form;
-        _settings = settings;
         _setStatus = setStatus;
-        _saveSettingsQuietly = saveSettingsQuietly;
     }
 
     /// <summary>托盘图标是否真的建出来了。关闭窗口要不要退到托盘、能不能隐藏都看它。</summary>

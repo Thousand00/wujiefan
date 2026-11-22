@@ -63,7 +63,7 @@ public sealed class MainForm : Form
         _chrome = new TitleBarChrome(this, DesignTitleHeight);
 
         _publisher = new RtssPublisher(_settings, SetStatus);
-        _tray = new TrayHost(this, _settings, SetStatus, SaveSettingsQuietly);
+        _tray = new TrayHost(this, SetStatus);
 
         // 热键回调直接在 UI 线程上执行 (WM_HOTKEY 投递到我们自己建的隐藏窗口),
         // 但按下那一刻可能正在跑别的消息处理, 所以仍然排到消息队列尾部再切模式。
@@ -575,26 +575,6 @@ public sealed class MainForm : Form
         else
         {
             SetStatus("设置已保存", Theme.Text2);
-        }
-    }
-
-    /// <summary>
-    /// 保存设置, 失败只写日志 —— 配置写不进去不该让程序崩掉或弹出对话框,
-    /// 但也不能假装成功: 至少要留下痕迹, 否则用户会以为选项已经记住了。
-    /// </summary>
-    private void SaveSettingsQuietly(string what)
-    {
-        // AppSettings.Save 是"失败不抛、返回 false + LastError"的契约 (原子写重试过
-        // 临时文件/替换/回退 Move 之后才放弃), 所以只 try/catch 会漏掉失败路径:
-        // 返回值 false 时什么都不会发生, 而调用方以为已经落盘了。
-        try
-        {
-            if (_settings.Save()) return;
-            UiLog($"保存设置失败 ({what}): {AppSettings.LastError ?? "未知原因"}");
-        }
-        catch (Exception ex)
-        {
-            UiLog($"保存设置失败 ({what}): {ex.Message}");
         }
     }
 
