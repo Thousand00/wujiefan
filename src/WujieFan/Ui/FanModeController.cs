@@ -663,6 +663,36 @@ internal sealed class FanModeController
     }
 
     /// <summary>
+    /// 托盘「退出」走这里: 与 <see cref="RestoreAutoOnShutdown"/> 共用同一个一次性标志。
+    ///
+    /// 以前 ExitApplication 直接调 RestoreAuto("程序退出"), 然后 Close() → Dispose()
+    /// 又调 RestoreAutoOnShutdown。标志只在后者里, 于是退出时对 EC 写了两次自动 ——
+    /// 写自动是幂等的, 但"进程退出时到底写了几次"这种事没法靠幂等糊过去:
+    /// 两次读改之间只要 EC 被别的软件动过, 后一次就会基于中间态做判断。
+    /// </summary>
+    public void RestoreAutoOnExit()
+    {
+        if (Interlocked.Exchange(ref _shutdownRestoreStarted, 1) != 0)
+        {
+            UiLog("RestoreAutoOnExit: 已经执行过, 本次跳过");
+            return;
+        }
+
+        // 已经确认是自动就不用再写一次。原来这句判断在 MainForm.ExitApplication 里,
+        // 收进这里是为了让"退出时会不会写 EC"只有一个决定点。
+        // ReadModeState 内部自己带锁 (Acquire/Release), 读不到返回 Unknown,
+        // 而 Unknown 不跳过 —— 无法确认干净就按没干净处理。
+        FanReader? reader = _reader();
+        if (reader is { IsOpen: true } && reader.ReadModeState() == FanModeState.Auto)
+        {
+            UiLog("RestoreAutoOnExit: EC 已经是自动模式, 不需要再写");
+            return;
+        }
+
+        RestoreAuto("程序退出");
+    }
+
+    /// <summary>
     /// 关机/注销/退出前把 EC 收回自动。
     ///
     /// 判据是"确认处于自动才跳过", 而不是"只有强冷才交还":

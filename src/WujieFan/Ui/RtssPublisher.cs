@@ -86,26 +86,17 @@ internal sealed class RtssPublisher : IDisposable
     {
         if (!_settings.PublishToRtss) return;
 
-        // 上一轮写失败把映射扔掉之后必须在这里重建, 否则供数会永久停掉:
-        // Apply 只在打开设备/从休眠恢复/改勾选时才跑, 轮询里没人再建。
-        if (_aida is not { IsOpen: true } &&
-            DateTime.UtcNow.Ticks - _lastTryTicks >= RetryIntervalTicks)
-        {
-            _lastTryTicks = DateTime.UtcNow.Ticks;
-            Apply();
-        }
-
-        if (_aida is not { IsOpen: true }) return;
+        if (EnsureOpen() is not { } aida) return;
 
         try
         {
             FanSnapshot snapshot = ToSnapshot(sample);
-            _aida.Publish(snapshot);
+            aida.Publish(snapshot);
         }
         catch (Exception ex)
         {
             // 写失败说明映射已经不可用, 丢掉, 下一轮在这里重建。
-            _aida.Dispose();
+            aida.Dispose();
             _aida = null;
             _setStatus("向 RTSS 供数失败: " + ex.Message, Theme.Warn);
         }
@@ -124,11 +115,12 @@ internal sealed class RtssPublisher : IDisposable
     public void PublishUnavailable()
     {
         if (!_settings.PublishToRtss) return;
-        if (_aida is not { IsOpen: true } || _lastFanEntries is null) return;
+        if (EnsureOpen() is not { } aida) return;
+        if (_lastFanEntries is null) return;
 
         try
         {
-            _aida.Publish(new FanSnapshot
+            aida.Publish(new FanSnapshot
             {
                 Fans = _lastFanEntries.Select(f => new FanEntry
                 {
@@ -141,10 +133,34 @@ internal sealed class RtssPublisher : IDisposable
         }
         catch (Exception ex)
         {
-            _aida.Dispose();
+            aida.Dispose();
             _aida = null;
             _setStatus("向 RTSS 供数失败: " + ex.Message, Theme.Warn);
         }
+    }
+
+    /// <summary>
+    /// 确认共享内存可用, 必要时按退避重建。两条发布路径都先过这里。
+    ///
+    /// 为什么不能只在 <see cref="Publish"/> 里重建: 写失败会把 _aida 扔掉, 而重建
+    /// 原先只挂在"成功采样"这条路上。一旦 EC 也同时读不到, Publish 根本不会被调用,
+    /// PublishUnavailable 又直接 return —— 供数就永久停了, 直到某次采样意外成功。
+    /// 两条路各写一份重建逻辑迟早会走样, 所以收成一个入口。
+    ///
+    /// 返回实例而不是 bool, 是为了让调用方拿到非空引用后, 编译器能据此做流分析。
+    /// </summary>
+    private AidaSharedMemory? EnsureOpen()
+    {
+        if (_aida is { IsOpen: true }) return _aida;
+
+        // Apply 只在打开设备/从休眠恢复/改勾选时才跑, 轮询里没人再建, 所以这里必须能自建。
+        if (DateTime.UtcNow.Ticks - _lastTryTicks >= RetryIntervalTicks)
+        {
+            _lastTryTicks = DateTime.UtcNow.Ticks;
+            Apply();
+        }
+
+        return _aida is { IsOpen: true } ? _aida : null;
     }
 
     private FanSnapshot ToSnapshot(FanSample s)

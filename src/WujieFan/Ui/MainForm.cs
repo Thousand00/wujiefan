@@ -647,13 +647,9 @@ public sealed class MainForm : Form
         // 不在退出时收手, 用户点了退出还以为风扇已经回到自动, 实际还在满转。
         // 这一步失败也不阻止退出: 卡在满转只是吵, 而不让用户退出才是真正的问题。
         //
-        // 判据只排除"确认是自动"这一种情况: Mixed 分裂残留 (一路手动满转、一路已交还)
-        // 同样必须收手, 否则退出后那一路会一直满转下去。
-        if (_polling.Reader is { IsOpen: true } reader
-            && reader.ReadModeState() != FanModeState.Auto)
-        {
-            _mode.RestoreAuto("程序退出");
-        }
+        // 走 RestoreAutoOnExit 而不是 RestoreAuto: 后面 Close() → Dispose() 还会
+        // 再调一次 RestoreAutoOnShutdown, 两条路共用一个一次性标志, 退出时只写一次 EC。
+        _mode.RestoreAutoOnExit();
 
         _exiting = true;
         Close();
@@ -697,6 +693,18 @@ public sealed class MainForm : Form
 
     private void OnSessionEnding(object? sender, SessionEndingEventArgs e)
     {
+        // 这个方法**故意不切回 UI 线程**, 与 OnPowerModeChanged 的写法不同, 理由有两条:
+        //
+        // 1. 关机/注销是有截止时间的。BeginInvoke 只是把工作排进消息队列, Windows 完全
+        //    可能在它被执行之前就把进程结束掉 —— 那样风扇交还就悄无声息地没做, 而
+        //    "退出时没交还"正是这个程序最不该出的问题。同步执行至少保证在返回前做完。
+        // 2. 它做的三件事 (交还 EC、改设置、写日志) 全都不碰控件, 所以在哪个线程跑都
+        //    不会崩。
+        //
+        // 代价是一条必须守住的约束: **谁在这里加任何与界面相关的调用, 都必须先切回 UI 线程**。
+        // 这不是隐含假设, 是这个方法存在的条件。
+        if (_disposedUi || IsDisposed) return;
+
         // 注销/关机前把风扇交还自动。用户下次开机时 EC 大概率已经掉电复位,
         // 但"重启"走的是软复位, EC RAM 不清 —— 那样下次开机就会出现满转风扇。
         _mode.RestoreAutoOnShutdown();

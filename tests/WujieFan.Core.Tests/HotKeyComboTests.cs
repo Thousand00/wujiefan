@@ -314,4 +314,46 @@ public class HotKeyComboTests
         Assert.Null(AppSettings.LoadWarning);
         Assert.False(AppSettings.LoadDegraded);
     }
+
+    [Fact]
+    public void 加载之后的热键字段必须是可解析的()
+    {
+        // 这条守的是一个不变量，不是一个具体行为：**Load() 正常返回（未降级）时，
+        // StrongCoolHotKey 一定要么是空串，要么能被 TryParse 原样解回去**。
+        //
+        // 为什么要单独测：MainForm.ApplyHotKey 里有一段"解析失败就停用并报错"的
+        // 兜底分支，而 Load 已经把坏值清成空串 —— 也就是说那段兜底在正常启动路径上
+        // 永远走不到。这不是缺陷（手改配置、将来改了白名单时它仍能兜住），但它意味着
+        // "配置文件的写法能被程序读懂"这件事没有别的地方在守。实测文件来自手改，
+        // 一旦 Load 的归一化和 TryParse 的语法悄悄分叉（比如 Load 认了某种写法、
+        // TryParse 不认），用户看到的就是"设了热键、重启后没了"，且没有任何报错。
+        foreach (string written in new[]
+                 {
+                     "",
+                     "Ctrl+Shift+End",
+                     "ctrl+alt+f9",        // 小写，读回应规范成 Ctrl+Alt+F9
+                     "Ctrl+0x2C",          // 十六进制写法，白名单外
+                     "Alt+Win+F1",
+                 })
+        {
+            RealSettingsFileFixture.WriteSettings(
+                "{ \"SchemaVersion\": 1, \"StrongCoolHotKey\": \"" + written + "\" }");
+
+            AppSettings s = AppSettings.Load();
+
+            Assert.False(AppSettings.LoadDegraded);
+            if (s.StrongCoolHotKey.Length == 0)
+            {
+                // 空串是合法状态：用户没设，或者写进去的东西被判定为不可用。
+                continue;
+            }
+
+            Assert.True(
+                HotKeyCombo.TryParse(s.StrongCoolHotKey, out HotKeyCombo? parsed),
+                $"Load 之后的热键 \"{s.StrongCoolHotKey}\" 居然解析不回来（原写法 \"{written}\"）");
+            Assert.NotNull(parsed);
+            // 而且必须是幂等的：拿解析结果再序列化一次，应该与存着的完全一致。
+            Assert.Equal(s.StrongCoolHotKey, parsed!.ToSettingString());
+        }
+    }
 }
