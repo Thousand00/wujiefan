@@ -3,20 +3,20 @@
   <!--
     仓库级版本基线。
 
-    审计发现 (t5 P0-1/P0-2/P0-3): 版本号原本散落在各个 .csproj 里, 且 WujieFan.Core
+    审计发现 (t5 P0-1/P0-2/P0-3): 版本号原本散落在各个 .csproj 里, 且 Zephyr.Core
     完全没有版本节点, 导致 Core.dll 的元数据退回默认 1.0.0, 与发布包名/主程序版本对不上。
 
     从现在起版本号只在这里定义, 由 MSBuild 自动继承到本目录下的所有项目
-    (WujieFan / WujieFan.Core / WujieFanLauncher), 单个 .csproj 里不得再写
+    (Zephyr / Zephyr.Core / ZephyrLauncher), 单个 .csproj 里不得再写
     Version / FileVersion / AssemblyVersion, 否则会覆盖这里并再次发散。
 
     发版流程: 只改这里一处 -> tools/make-release.ps1 -Version <同一个值>
     (脚本会校验两者一致, 不一致直接报错)。
   -->
   <PropertyGroup>
-    <Version>0.5.7</Version>
-    <FileVersion>0.5.7</FileVersion>
-    <AssemblyVersion>0.5.7</AssemblyVersion>
+    <Version>0.6.0</Version>
+    <FileVersion>0.6.0</FileVersion>
+    <AssemblyVersion>0.6.0</AssemblyVersion>
   </PropertyGroup>
 
 </Project>

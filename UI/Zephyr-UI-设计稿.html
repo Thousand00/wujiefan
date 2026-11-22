@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zephyr · 前端 UI 设计稿</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231B1E25'/%3E%3Cg fill='%235FB4E8'%3E%3Cpath d='M16 16c-1.6-3.2-1.4-7 .6-9.4 2.6-.2 4.6 1.8 4.4 4.6-.2 2.4-2.4 4.2-5 4.8z'/%3E%3Cpath d='M16 16c3.2-1.6 7-1.4 9.4.6.2 2.6-1.8 4.6-4.6 4.4-2.4-.2-4.2-2.4-4.8-5z'/%3E%3Cpath d='M16 16c-3.2 1.6-7 1.4-9.4-.6-.2-2.6 1.8-4.6 4.6-4.4 2.4.2 4.2 2.4 4.8 5z'/%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='2.2' fill='%23EAEDF2'/%3E%3C/svg%3E">
+<style>
+/* ===================== 设计 token ===================== */
+:root{
+  --app-bg:#101216;
+  --win-bg:#1B1E25;
+  --panel:#232730;
+  --panel-2:#2B303A;
+  --line:#343A45;
+  --line-soft:#2A2F38;
+  --text-1:#EAEDF2;
+  --text-2:#9BA3AF;
+  --text-3:#68707D;
+  --accent:#5FB4E8;
+  --cool:#E8824E;
+  --ok:#63AF7B;
+  --ok-dim:#4E8F66;
+  --warn:#DDA63F;
+  --err:#D65F5B;
+  --mono:"Cascadia Code",Consolas,"Roboto Mono",ui-monospace,monospace;
+  --sans:"Microsoft YaHei UI","Segoe UI",system-ui,-apple-system,sans-serif;
+  --radius:12px;
+  --radius-sm:8px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--app-bg);
+  color:var(--text-1);
+  font-family:var(--sans);
+  font-size:14px;
+  line-height:1.55;
+  -webkit-font-smoothing:antialiased;
+}
+button{font-family:inherit;color:inherit}
+
+/* ===================== 页面外壳 ===================== */
+.shell{max-width:1080px;margin:0 auto;padding:28px 24px 64px}
+.shell-head{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;margin-bottom:22px}
+.shell-head h1{font-size:20px;font-weight:700;letter-spacing:.2px}
+.shell-head .sub{color:var(--text-2);font-size:13px}
+.tabs{display:flex;gap:6px;margin:18px 0 26px;border-bottom:1px solid var(--line-soft);flex-wrap:wrap}
+.tab{
+  appearance:none;background:none;border:0;padding:10px 16px;font-size:13.5px;color:var(--text-2);
+  cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;
+}
+.tab:hover{color:var(--text-1)}
+.tab.active{color:var(--text-1);border-bottom-color:var(--accent);font-weight:600}
+.view{display:none}
+.view.active{display:block}
+
+/* ===================== 桌面场景 ===================== */
+.scene{
+  background:
+    radial-gradient(1200px 600px at 70% -10%, rgba(95,180,232,.08), transparent 60%),
+    #0D0F13;
+  border:1px solid var(--line-soft);border-radius:16px;
+  padding:36px 24px;min-height:520px;
+  display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start;justify-content:center;
+}
+
+/* ===================== 窗口（复用结构） ===================== */
+.window{
+  width:432px;background:var(--win-bg);border:1px solid var(--line);
+  border-radius:var(--radius);box-shadow:0 24px 60px rgba(0,0,0,.45);
+  overflow:hidden;display:flex;flex-direction:column;
+}
+.titlebar{
+  display:flex;align-items:center;gap:10px;padding:13px 16px 11px;
+  border-bottom:1px solid var(--line-soft);
+}
+.brand-mark{
+  width:28px;height:28px;border-radius:7px;background:var(--panel-2);
+  display:grid;place-items:center;flex:none;
+}
+.brand-text{display:flex;flex-direction:column;line-height:1.25;min-width:0}
+.brand-text .name{font-size:13.5px;font-weight:700}
+.brand-text .tag{font-size:11px;color:var(--text-3)}
+.title-actions{margin-left:auto;display:flex;gap:6px}
+.title-btn{
+  width:30px;height:30px;border:0;background:none;border-radius:7px;color:var(--text-2);
+  display:grid;place-items:center;cursor:pointer;
+}
+.title-btn:hover{background:var(--panel-2);color:var(--text-1)}
+.title-btn.close:hover{background:var(--err);color:#fff}
+
+.machine{padding:14px 18px 0;font-size:12px;color:var(--text-2)}
+.machine .sep{color:var(--text-3);margin:0 6px}
+
+.data-grid{
+  display:grid;grid-template-columns:1fr 1fr .9fr;gap:10px;padding:16px 18px 6px;
+}
+.data-cell{background:var(--panel);border:1px solid var(--line-soft);border-radius:var(--radius-sm);padding:14px 14px 12px}
+.data-cell .label{font-size:11.5px;color:var(--text-2);margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.data-cell .value{font-family:var(--mono);font-size:27px;font-weight:700;letter-spacing:.5px;line-height:1.1}
+.data-cell .unit{font-size:11px;color:var(--text-3);margin-left:5px;font-family:var(--sans)}
+.data-cell.temp .value{font-size:23px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--text-3);display:inline-block}
+.dot.ok{background:var(--ok)}
+.dot.warn{background:var(--warn)}
+.dot.err{background:var(--err)}
+
+.controls{padding:10px 18px 4px;display:flex;flex-direction:column;gap:2px}
+.ctrl-row{
+  display:flex;align-items:center;gap:11px;padding:10px 8px;border-radius:var(--radius-sm);cursor:pointer;
+  min-height:44px;
+}
+.ctrl-row:hover{background:var(--panel)}
+.check{
+  width:18px;height:18px;border-radius:5px;border:1.5px solid var(--text-3);flex:none;
+  display:grid;place-items:center;background:var(--panel-2);
+}
+.ctrl-row.on .check{background:var(--accent);border-color:var(--accent)}
+.check svg{display:none}
+.ctrl-row.on .check svg{display:block}
+.ctrl-label{font-size:13px;color:var(--text-1);min-width:0}
+.ctrl-label .hint{color:var(--text-3);font-size:12px}
+.badge{
+  margin-left:auto;font-size:12px;padding:3px 10px;border-radius:999px;flex:none;
+  background:var(--panel-2);color:var(--text-2);border:1px solid var(--line-soft);
+}
+.badge.auto{color:var(--text-2)}
+.badge.cool{color:var(--ok);border-color:rgba(99,175,123,.35);background:rgba(99,175,123,.1)}
+.badge.mixed{color:var(--warn);border-color:rgba(221,166,63,.35);background:rgba(221,166,63,.1)}
+.badge.unknown{color:var(--text-3)}
+
+.status{
+  margin:12px 18px 16px;padding:11px 13px;border-radius:var(--radius-sm);
+  background:var(--panel);border:1px solid var(--line-soft);
+  display:flex;gap:9px;align-items:flex-start;font-size:12.5px;color:var(--text-2);
+}
+.status .dot{margin-top:6px;flex:none}
+.status.ok{color:var(--ok)}
+.status.warn{color:var(--warn)}
+.status.err{color:var(--err)}
+.status.gray{color:var(--text-2)}
+
+.footnote{padding:0 18px 16px;font-size:11.5px;color:var(--text-3)}
+
+/* ===================== 托盘菜单预览 ===================== */
+.tray-block{display:flex;flex-direction:column;gap:12px;align-items:flex-start}
+.tray-caption{font-size:12px;color:var(--text-3)}
+.tray-menu{
+  width:248px;background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:6px;box-shadow:0 16px 40px rgba(0,0,0,.5);
+}
+.tray-item{
+  display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:7px;
+  font-size:13px;color:var(--text-1);cursor:pointer;width:100%;border:0;background:none;text-align:left;
+}
+.tray-item:hover{background:var(--panel-2)}
+.tray-item.danger{color:var(--err)}
+.tray-sep{height:1px;background:var(--line-soft);margin:6px 8px}
+.tray-item svg{flex:none;opacity:.8}
+
+/* ===================== 状态图鉴 ===================== */
+.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:22px}
+.gcard{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:12px}
+.gcard h3{font-size:14px;font-weight:600}
+.gcard .gmeta{font-size:12px;color:var(--text-3);line-height:1.6}
+.gcard .gmeta code{font-family:var(--mono);font-size:11.5px;color:var(--text-2)}
+.mini-win{background:var(--win-bg);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.mini-win .machine{padding:10px 13px 0;font-size:11px}
+.mini-data{display:grid;grid-template-columns:1fr 1fr .8fr;gap:8px;padding:12px 13px 4px}
+.mini-data .dc{background:var(--panel);border-radius:7px;padding:9px 10px}
+.mini-data .lb{font-size:10.5px;color:var(--text-3);margin-bottom:3px}
+.mini-data .vl{font-family:var(--mono);font-size:18px;font-weight:700}
+.mini-data .vl small{font-size:10px;color:var(--text-3);font-family:var(--sans);margin-left:3px}
+.mini-status{margin:10px 13px 12px;padding:9px 11px;border-radius:7px;font-size:11.5px;display:flex;gap:8px;align-items:flex-start;background:var(--panel)}
+.mini-status .dot{margin-top:5px}
+
+/* ===================== 设计规范 ===================== */
+.spec-section{margin-bottom:34px}
+.spec-section > h2{font-size:15px;font-weight:700;margin-bottom:14px;padding-left:10px;border-left:3px solid var(--accent)}
+.tokens{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+.token{background:var(--panel);border:1px solid var(--line-soft);border-radius:10px;padding:13px}
+.token .swatch{height:44px;border-radius:7px;margin-bottom:9px;border:1px solid rgba(255,255,255,.08)}
+.token .tname{font-size:13px;font-weight:600}
+.token .thex{font-family:var(--mono);font-size:11.5px;color:var(--text-3);margin-top:2px}
+.token .tdesc{font-size:12px;color:var(--text-2);margin-top:5px}
+
+table.spec{width:100%;border-collapse:collapse;font-size:13px;background:var(--panel);border-radius:12px;overflow:hidden}
+table.spec th,table.spec td{padding:10px 13px;border-bottom:1px solid var(--line-soft);vertical-align:top;text-align:left}
+table.spec th{color:var(--text-2);font-weight:600;font-size:12px;background:var(--panel-2)}
+table.spec tr:last-child td{border-bottom:0}
+table.spec code{font-family:var(--mono);font-size:11.5px;color:var(--accent)}
+.swatch-inline{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}
+
+.note-box{background:var(--panel);border:1px solid var(--line-soft);border-left:3px solid var(--warn);border-radius:10px;padding:14px 16px;font-size:12.5px;color:var(--text-2);line-height:1.7}
+.note-box ul{padding-left:18px;display:flex;flex-direction:column;gap:6px}
+
+/* 窄屏 */
+@media (max-width:720px){
+  .shell{padding:20px 14px 48px}
+  .scene{padding:24px 14px}
+  .window{width:100%}
+  .data-grid{grid-template-columns:1fr 1fr}
+  .data-cell.temp{grid-column:span 2}
+}
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="shell-head">
+    <h1>Zephyr · 前端 UI 设计稿</h1>
+    <span class="sub">MECHREVO 无界14+ · 7840HS · ITE EC 2.12 · 对应现有 WinForms 主窗口与托盘菜单</span>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-view="main">主界面</button>
+    <button class="tab" data-view="gallery">状态图鉴</button>
+    <button class="tab" data-view="spec">设计规范</button>
+  </nav>
+
+  <!-- ============ 视图：主界面 ============ -->
+  <section class="view active" id="view-main">
+    <div class="scene">
+      <div class="window" id="main-window"><!-- 由 JS 渲染 --></div>
+      <div class="tray-block">
+        <div class="tray-caption">托盘右键菜单（托盘图标双击 = 显示主窗口）</div>
+        <div class="tray-menu" id="tray-menu"><!-- 由 JS 渲染 --></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 视图：状态图鉴 ============ -->
+  <section class="view" id="view-gallery">
+    <div class="gallery" id="gallery"><!-- 由 JS 渲染 --></div>
+  </section>
+
+  <!-- ============ 视图：设计规范 ============ -->
+  <section class="view" id="view-spec">
+    <div class="spec-section">
+      <h2>色彩 token</h2>
+      <div class="tokens" id="token-grid"></div>
+    </div>
+
+    <div class="spec-section">
+      <h2>字体与字号层级</h2>
+      <table class="spec">
+        <colgroup><col style="width:22%"><col style="width:30%"><col style="width:48%"></colgroup>
+        <thead><tr><th>层级</th><th>规格</th><th>用途</th></tr></thead>
+        <tbody>
+          <tr><td>窗口标题</td><td>13.5px / 700 / sans</td><td>品牌名 Zephyr；副标题 11px 弱提示</td></tr>
+          <tr><td>机型信息</td><td>12px / 400 / text-2</td><td>厂商 型号 · BIOS · EC 版本</td></tr>
+          <tr><td>数据数字</td><td>27px / 700 / 等宽</td><td>风扇 RPM；温度 23px，保持等宽对齐</td></tr>
+          <tr><td>数据标签</td><td>11.5px / text-2</td><td>Fan1 (CPU)、Fan2 (GPU)、CPU</td></tr>
+          <tr><td>控件文案</td><td>13px / text-1</td><td>开关行主文案；括注说明 12px text-3</td></tr>
+          <tr><td>状态栏</td><td>12.5px / 语义色</td><td>连接状态、错误与提示，圆点前置</td></tr>
+          <tr><td>脚注</td><td>11.5px / text-3</td><td>托盘行为说明、边界提示</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="spec-section">
+      <h2>控件映射：现有 WinForms → 新 UI</h2>
+      <table class="spec">
+        <colgroup><col style="width:26%"><col style="width:24%"><col style="width:26%"><col style="width:24%"></colgroup>
+        <thead><tr><th>现有控件 / 字段</th><th>数据来源</th><th>新 UI 元素</th><th>备注</th></tr></thead>
+        <tbody>
+          <tr><td>窗口 <code>Text</code> + 标题 Label「风扇转速」</td><td>—</td><td>标题栏品牌区</td><td>品牌名 + 副标题「无界14+ 风扇转速」</td></tr>
+          <tr><td><code>modelLabel</code></td><td><code>DescribeMachine()</code></td><td>机型信息行</td><td>厂商 型号 · BIOS · EC；不可读时显示「机器信息不可读」</td></tr>
+          <tr><td><code>_fan1Value</code> / <code>fan1Caption</code></td><td><code>sample.Fans[0]</code></td><td>Fan1 (CPU) 数据卡</td><td>等宽大数字 + RPM；不可信显示 --，停转显示 0</td></tr>
+          <tr><td><code>_fan2Value</code> / <code>fan2Caption</code></td><td><code>sample.Fans[1]</code></td><td>Fan2 (GPU) 数据卡</td><td>同上</td></tr>
+          <tr><td><code>_tempValue</code> / <code>tempCaption</code></td><td><code>sample.Temperature</code></td><td>CPU °C 数据卡</td><td>温度为空显示 --</td></tr>
+          <tr><td><code>_autoStartCheck</code></td><td><code>AutoStartManager</code></td><td>开机自启开关</td><td>同名计划任务已存在时锁定禁用并改写文案</td></tr>
+          <tr><td><code>rtssCheck</code></td><td><code>_settings.PublishToRtss</code></td><td>RTSS 供数开关</td><td>AIDA64 共享内存通道，改动即时落盘</td></tr>
+          <tr><td><code>_strongCoolCheck</code></td><td><code>_settings.FanMode</code></td><td>强冷开关</td><td>切换失败必须回滚到 EC 真实状态，不保留假象</td></tr>
+          <tr><td><code>_fanModeState</code></td><td><code>UpdateFanModeUi()</code></td><td>模式徽章</td><td>自动 / 强冷 / 异常标志 / 未知，以 EC 回读为准</td></tr>
+          <tr><td><code>_statusLabel</code></td><td><code>SetStatus()</code></td><td>状态栏</td><td>圆点 + 语义色文案，多行可容纳长提示</td></tr>
+          <tr><td><code>NotifyIcon</code> 右键菜单</td><td><code>BuildTrayMenu()</code></td><td>托盘菜单预览</td><td>显示主窗口 / 恢复自动风扇 / 重新检测机型 / 退出</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="spec-section">
+      <h2>风扇模式状态语义</h2>
+      <table class="spec">
+        <colgroup><col style="width:22%"><col style="width:24%"><col style="width:20%"><col style="width:34%"></colgroup>
+        <thead><tr><th>FanModeState</th><th>徽章文案</th><th>语义色</th><th>触发条件</th></tr></thead>
+        <tbody>
+          <tr><td><code>Auto</code></td><td>实际: 自动</td><td><span class="swatch-inline" style="background:var(--text-2)"></span>中性灰</td><td>两路模式标志均为 0x00，EC 固件自主调速</td></tr>
+          <tr><td><code>StrongCool</code></td><td>实际: 强冷</td><td><span class="swatch-inline" style="background:var(--ok)"></span>成功绿</td><td>两路标志均为 0xDC，手动 PWM 184 满转</td></tr>
+          <tr><td><code>Mixed</code></td><td>实际: 异常标志</td><td><span class="swatch-inline" style="background:var(--warn)"></span>警告橙</td><td>两路标志不一致，或落在 0xA5 / 0xCC 等未知取值</td></tr>
+          <tr><td><code>Unknown</code></td><td>（不显示文案）</td><td><span class="swatch-inline" style="background:var(--text-3)"></span>弱灰</td><td>设备尚未打开或未完成首次回读</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="spec-section">
+      <h2>状态栏颜色映射</h2>
+      <table class="spec">
+        <colgroup><col style="width:30%"><col style="width:36%"><col style="width:34%"></colgroup>
+        <thead><tr><th>代码颜色</th><th>典型场景</th><th>设计 token</th></tr></thead>
+        <tbody>
+          <tr><td><code>Color.Green</code> / <code>DarkGreen</code></td><td>设备已连接、强冷开启成功</td><td><span class="swatch-inline" style="background:var(--ok)"></span>--ok #63AF7B</td></tr>
+          <tr><td><code>Color.DarkOrange</code></td><td>跳过校验、供数失败、共享内存打不开、过热交还</td><td><span class="swatch-inline" style="background:var(--warn)"></span>--warn #DDA63F</td></tr>
+          <tr><td><code>Color.Firebrick</code></td><td>机型不受支持、硬件打不开、读取失败</td><td><span class="swatch-inline" style="background:var(--err)"></span>--err #D65F5B</td></tr>
+          <tr><td><code>Color.Gray</code> / <code>DimGray</code></td><td>初始化、已交还自动模式、中性信息</td><td><span class="swatch-inline" style="background:var(--text-2)"></span>--text-2 #9BA3AF</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="spec-section">
+      <h2>托盘菜单项</h2>
+      <table class="spec">
+        <colgroup><col style="width:26%"><col style="width:40%"><col style="width:34%"></colgroup>
+        <thead><tr><th>菜单项</th><th>动作</th><th>对应代码</th></tr></thead>
+        <tbody>
+          <tr><td>显示主窗口</td><td>把隐藏窗口叫回前台；双击托盘图标同路径</td><td><code>RestoreFromTray()</code></td></tr>
+          <tr><td>恢复自动风扇</td><td>逃生口：不看设置、不回读重试，直接把 EC 交还自动</td><td><code>EmergencyRestoreAuto()</code></td></tr>
+          <tr><td>重新检测机型</td><td>清除 ForceUnsupported，关闭设备后重新校验打开</td><td><code>RetryHardwareCheck()</code></td></tr>
+          <tr><td>退出 Zephyr</td><td>退出前若仍在强冷，先交还自动模式再结束进程</td><td><code>ExitApplication()</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="spec-section">
+      <h2>界面必须守住的安全边界</h2>
+      <div class="note-box">
+        <ul>
+          <li>强冷只升不降：仅提供自动 / 强冷两档，手动 PWM 184（100% 占空比，约 5700 RPM），不做降速档；允许慢于固件判断才是真正的过热风险。</li>
+          <li>温度看门狗：强冷状态下连续 3 次采样达到 92°C 以上才自动交还 EC；编译、游戏加载这类单次尖峰不打断强冷。</li>
+          <li>写入范围：仅强冷时写四个寄存器（两路手动 PWM + 两路模式标志），自动模式下程序只读 EC，不碰风扇曲线表、阈值与 NVRAM。</li>
+          <li>残留归一化：退出、注销、重启前主动交还自动；下次启动按设置把 EC 拉回约定模式，不依赖上次进程退出得是否干净。</li>
+          <li>采样间隔固定 1 秒展示（设置项 PollIntervalMs 允许 200~10000ms，但不暴露进界面）。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="spec-section">
+      <h2>本稿性质说明</h2>
+      <div class="note-box">
+        这是一套高保真静态原型：页面内转速、温度均为示例值（自动档取日常区间，强冷档取自实测截图），不连接真实 EC 与 PawnIO；开关只切换原型视觉状态，不写设置、不操作硬件。落地到 WinForms 或其他 UI 框架时，按上方控件映射表一一对应即可。
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+/* ===================== 原型状态 ===================== */
+const state = {
+  autoStart: true,    // 对应 _autoStartCheck / AutoStartManager
+  publishRtss: true,  // 对应 rtssCheck / AppSettings.PublishToRtss
+  strongCool: false  // 对应 _strongCoolCheck / FanMode
+};
+
+const MACHINE = "MECHREVO WUJIE 14";
+const MACHINE_META = "BIOS 2.31 · EC 2.12";
+
+/* 示例读数：自动档取自日常区间 3000~4200 RPM；强冷档取自实测截图 5629 / 5600 / 72°C */
+const SAMPLE = {
+  auto:    { fan1: "3842", fan2: "3610", temp: "63" },
+  strong:  { fan1: "5629", fan2: "5600", temp: "72" }
+};
+
+function esc(s){return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}
+
+/* ===================== 主窗口渲染 ===================== */
+function badgeFor(){
+  if(state.strongCool) return { tone:"cool", text:"实际: 强冷" };
+  return { tone:"auto", text:"实际: 自动" };
+}
+
+function statusFor(){
+  if(state.strongCool){
+    return { tone:"ok", dot:"ok", text:"强冷已开启: 两个风扇满转 (约 5700 RPM), 温度会明显下降。" };
+  }
+  return { tone:"gray", dot:"", text:"已连接 · PawnIO 1.0 · 读数正常, 按 1 秒间隔采样。" };
+}
+
+function renderMainWindow(){
+  const s = state.strongCool ? SAMPLE.strong : SAMPLE.auto;
+  const badge = badgeFor();
+  const st = statusFor();
+  const win = document.getElementById("main-window");
+  win.innerHTML = `
+    <div class="titlebar">
+      <div class="brand-mark">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+          <g fill="#5FB4E8">
+            <path d="M12 12c-1.2-2.4-1.1-5.2.5-7 .5 0 .9.1 1.3.3 1.9.1 3.3 1.5 3.2 3.2-.1 1.8-1.7 3.2-3.7 3.5l-1.3 0z"/>
+            <path d="M12 12c2.4-1.2 5.2-1.1 7 .5 0 .5-.1.9-.3 1.3-.1 1.9-1.5 3.3-3.2 3.2-1.8-.1-3.2-1.7-3.5-3.7l0-1.3z"/>
+            <path d="M12 12c-2.4 1.2-5.2 1.1-7-.5 0-.5.1-.9.3-1.3.1-1.9 1.5-3.3 3.2-3.2 1.8.1 3.2 1.7 3.5 3.7l0 1.3z"/>
+          </g>
+          <circle cx="12" cy="12" r="1.7" fill="#EAEDF2"/>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <span class="name">Zephyr</span>
+        <span class="tag">无界14+ 风扇转速</span>
+      </div>
+      <div class="title-actions">
+        <button class="title-btn" title="最小化" aria-label="最小化">
+          <svg width="13" height="13" viewBox="0 0 13 13"><path d="M2 6.5h9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        </button>
+        <button class="title-btn close" title="关闭（收进托盘）" aria-label="关闭">
+          <svg width="13" height="13" viewBox="0 0 13 13"><path d="M2.5 2.5l8 8m0-8l-8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="machine">${esc(MACHINE)}<span class="sep">·</span>${esc(MACHINE_META)}</div>
+
+    <div class="data-grid">
+      <div class="data-cell">
+        <div class="label"><span class="dot ok"></span>Fan1 (CPU)</div>
+        <div class="value">${s.fan1}<span class="unit">RPM</span></div>
+      </div>
+      <div class="data-cell">
+        <div class="label"><span class="dot ok"></span>Fan2 (GPU)</div>
+        <div class="value">${s.fan2}<span class="unit">RPM</span></div>
+      </div>
+      <div class="data-cell temp">
+        <div class="label">CPU</div>
+        <div class="value">${s.temp}<span class="unit">°C</span></div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="ctrl-row ${state.autoStart ? "on" : ""}" data-key="autoStart" role="checkbox" aria-checked="${state.autoStart}" tabindex="0">
+        <span class="check"><svg width="11" height="11" viewBox="0 0 11 11"><path d="M1.5 5.8l2.4 2.4 5.6-5.6" stroke="#101216" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="ctrl-label">开机自动启动 <span class="hint">(需要管理员权限)</span></span>
+      </div>
+      <div class="ctrl-row ${state.publishRtss ? "on" : ""}" data-key="publishRtss" role="checkbox" aria-checked="${state.publishRtss}" tabindex="0">
+        <span class="check"><svg width="11" height="11" viewBox="0 0 11 11"><path d="M1.5 5.8l2.4 2.4 5.6-5.6" stroke="#101216" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="ctrl-label">向 RTSS 提供数据 <span class="hint">(AIDA64 通道)</span></span>
+      </div>
+      <div class="ctrl-row ${state.strongCool ? "on" : ""}" data-key="strongCool" role="checkbox" aria-checked="${state.strongCool}" tabindex="0">
+        <span class="check"><svg width="11" height="11" viewBox="0 0 11 11"><path d="M1.5 5.8l2.4 2.4 5.6-5.6" stroke="#101216" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <span class="ctrl-label">强冷模式 <span class="hint">(两个风扇满转)</span></span>
+        <span class="badge ${badge.tone}">${esc(badge.text)}</span>
+      </div>
+    </div>
+
+    <div class="status ${st.tone}">
+      <span class="dot ${st.dot}"></span>
+      <span>${esc(st.text)}</span>
+    </div>
+    <div class="footnote">点 × 不收进程，只收进托盘继续读数与供数；双击托盘图标唤回窗口。</div>
+  `;
+
+  win.querySelectorAll(".ctrl-row").forEach(row=>{
+    row.addEventListener("click", ()=>{
+      const key = row.dataset.key;
+      state[key] = !state[key];
+      renderMainWindow();
+    });
+    row.addEventListener("keydown", e=>{
+      if(e.key === " " || e.key === "Enter"){e.preventDefault();row.click()}
+    });
+  });
+}
+
+/* ===================== 托盘菜单渲染 ===================== */
+function renderTray(){
+  const menu = document.getElementById("tray-menu");
+  const items = [
+    { label:"显示主窗口", icon:"M4 5h16v11H4z M7 19h10" },
+    { label:"恢复自动风扇", icon:"M12 3v9m0 0l-3.5-3.5M12 12l3.5-3.5" },
+    { label:"重新检测机型", icon:"M4 12a8 8 0 108-8 8 8 0 00-8 8z M12 8v4l3 2" },
+  ];
+  menu.innerHTML = `
+    ${items.map(it=>`
+      <button class="tray-item">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="${it.icon}"/></svg>
+        ${esc(it.label)}
+      </button>`).join("")}
+    <div class="tray-sep"></div>
+    <button class="tray-item danger">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      退出 Zephyr
+    </button>`;
+}
+
+/* ===================== 视图路由 ===================== */
+document.querySelectorAll(".tab").forEach(tab=>{
+  tab.addEventListener("click", ()=>{
+    document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));
+    document.querySelectorAll(".view").forEach(v=>v.classList.remove("active"));
+    tab.classList.add("active");
+    document.getElementById("view-" + tab.dataset.view).classList.add("active");
+  });
+});
+
+renderMainWindow();
+renderTray();
+/* ===================== 状态图鉴 ===================== */
+/* 每条状态均对应 MainForm.cs / FanMode.cs / EcRegisters.cs 中的真实分支与文案 */
+const GALLERY = [
+  {
+    title:"已连接 · 自动模式",
+    fan1:"3842", fan2:"3610", temp:"63",
+    badge:"auto", badgeText:"实际: 自动",
+    status:"gray", dot:"",
+    statusText:"已连接 · PawnIO 1.0 · 读数正常, 按 1 秒间隔采样。",
+    note:"出处 <code>OpenReader()</code> 成功分支; 自动档由 EC 固件按温度曲线调速, 日常 3000~4200 RPM。"
+  },
+  {
+    title:"已连接 · 跳过机型校验",
+    fan1:"--", fan2:"--", temp:"--",
+    badge:"unknown", badgeText:"实际: 未知",
+    status:"warn", dot:"warn",
+    statusText:"已连接 · PawnIO 1.0 · 已跳过机型校验。",
+    note:"出处 <code>OpenReader()</code> 中 <code>ForceUnsupported=true</code> 分支; 橙色提示强开风险, 读数可能错误。"
+  },
+  {
+    title:"强冷运行中",
+    fan1:"5629", fan2:"5600", temp:"72",
+    badge:"cool", badgeText:"实际: 强冷",
+    status:"ok", dot:"ok",
+    statusText:"强冷已开启: 两个风扇满转 (约 5700 RPM), 温度会明显下降。",
+    note:"出处 <code>SetFanMode(StrongCool)</code> 成功; 手动 PWM 184 / 模式标志 0xDC, 满转约 5700 RPM。"
+  },
+  {
+    title:"EC 模式标志异常",
+    fan1:"3710", fan2:"--", temp:"66",
+    badge:"mixed", badgeText:"实际: 异常标志",
+    status:"warn", dot:"warn",
+    statusText:"两个风扇标志不一致或落在未知取值 (0xA5 / 0xCC), 已按 EC 回读显示。",
+    note:"出处 <code>FanModeState.Mixed</code>; 界面以 EC 回读的真实模式为准, 不沿用勾选框的意愿状态。"
+  },
+  {
+    title:"机型不受支持",
+    fan1:"--", fan2:"--", temp:"--",
+    badge:"unknown", badgeText:"实际: 未知",
+    status:"err", dot:"err",
+    statusText:"机型不受支持, 已停止读取。",
+    note:"出处 <code>HardwareNotSupportedException</code> 分支; 寄存器地址仅对该机型 + EC 2.12 成立, 程序直接拒绝而不是尽力而为。"
+  },
+  {
+    title:"硬件打不开",
+    fan1:"--", fan2:"--", temp:"--",
+    badge:"unknown", badgeText:"实际: 未知",
+    status:"err", dot:"err",
+    statusText:"打不开硬件: 设备对象拒绝访问 (需要管理员权限)。",
+    note:"出处 <code>OpenReader()</code> 兜底 catch; PawnIO 设备对象 SDDL 只放行 SYSTEM 与 Administrators。"
+  },
+  {
+    title:"向 RTSS 供数失败",
+    fan1:"3842", fan2:"3610", temp:"63",
+    badge:"auto", badgeText:"实际: 自动",
+    status:"warn", dot:"warn",
+    statusText:"向 RTSS 供数失败: 共享内存映射已失效, 将在下一轮自动重建。",
+    note:"出处 <code>OnTick</code> 中 <code>AidaSharedMemory.Publish</code> 的 catch; 失败后丢弃映射, 按 10 秒退避重试。"
+  },
+  {
+    title:"AIDA64 共享内存打不开",
+    fan1:"3842", fan2:"3610", temp:"63",
+    badge:"auto", badgeText:"实际: 自动",
+    status:"warn", dot:"warn",
+    statusText:"打不开 AIDA64 共享内存: 拒绝访问。",
+    note:"出处 <code>ApplyPublishMode()</code> 的 catch; 读取与界面显示不受影响, 仅 RTSS 通道不可用。"
+  },
+  {
+    title:"启动初期 / 读数空态",
+    fan1:"--", fan2:"--", temp:"--",
+    badge:"unknown", badgeText:"",
+    status:"gray", dot:"",
+    statusText:"正在初始化...",
+    note:"出处 <code>_statusLabel</code> 初始文案; 读数不可信时转速显示 <code>--</code>, 停转才显示 <code>0</code>, 两者不混。"
+  },
+  {
+    title:"过热保护自动交还",
+    fan1:"3205", fan2:"3188", temp:"92",
+    badge:"auto", badgeText:"实际: 自动",
+    status:"warn", dot:"warn",
+    statusText:"温度过高, 已自动交还风扇控制权给 EC。",
+    note:"出处 <code>EmergencyRestoreAuto(\"过热保护\")</code>; 强冷下连续 3 次采样 ≥ 92°C 触发, 单次尖峰不打断强冷。"
+  }
+];
+
+function renderGallery(){
+  const wrap = document.getElementById("gallery");
+  wrap.innerHTML = GALLERY.map((g,i)=>`
+    <article class="gcard">
+      <h3>${esc(g.title)}</h3>
+      <div class="mini-win">
+        <div class="machine">${esc(MACHINE)}<span class="sep">·</span>${esc(MACHINE_META)}</div>
+        <div class="mini-data">
+          <div class="dc"><div class="lb">Fan1 (CPU)</div><div class="vl">${esc(g.fan1)}<small>RPM</small></div></div>
+          <div class="dc"><div class="lb">Fan2 (GPU)</div><div class="vl">${esc(g.fan2)}<small>RPM</small></div></div>
+          <div class="dc"><div class="lb">CPU °C</div><div class="vl">${esc(g.temp)}</div></div>
+        </div>
+        <div class="mini-status ${g.status}">
+          <span class="dot ${g.dot}"></span>
+          <span>${esc(g.statusText)}</span>
+        </div>
+      </div>
+      <div class="gmeta">${g.note}</div>
+    </article>`).join("");
+}
+renderGallery();
+
+/* ===================== 色彩 token 渲染 ===================== */
+const TOKENS = [
+  { name:"app-bg",   hex:"#101216", desc:"页面 / 桌面场景背景" },
+  { name:"win-bg",   hex:"#1B1E25", desc:"窗口底色" },
+  { name:"panel",    hex:"#232730", desc:"卡片 / 面板" },
+  { name:"panel-2", hex:"#2B303A", desc:"抬升层 / hover 态" },
+  { name:"line",     hex:"#343A45", desc:"边框线" },
+  { name:"text-1",   hex:"#EAEDF2", desc:"主文字" },
+  { name:"text-2",   hex:"#9BA3AF", desc:"次文字 / 中性状态" },
+  { name:"text-3",   hex:"#68707D", desc:"弱提示 / 占位" },
+  { name:"accent",   hex:"#5FB4E8", desc:"数据强调 / 开关选中" },
+  { name:"ok",       hex:"#63AF7B", desc:"成功 / 强冷运行" },
+  { name:"warn",     hex:"#DDA63F", desc:"警告 / 异常标志 / 重试" },
+  { name:"err",      hex:"#D65F5B", desc:"错误 / 不可用" },
+  { name:"cool",     hex:"#E8824E", desc:"强冷热橙（热度示意预留）" }
+];
+function renderTokens(){
+  document.getElementById("token-grid").innerHTML = TOKENS.map(t=>`
+    <div class="token">
+      <div class="swatch" style="background:${t.hex}"></div>
+      <div class="tname">--${t.name}</div>
+      <div class="thex">${t.hex}</div>
+      <div class="tdesc">${esc(t.desc)}</div>
+    </div>`).join("");
+}
+renderTokens();
+</script>
+</body>
+</html>

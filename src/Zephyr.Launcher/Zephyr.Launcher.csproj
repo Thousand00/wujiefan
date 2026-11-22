@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>ZephyrLauncher</AssemblyName>
+    <RootNamespace>Zephyr.Launcher</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <!--
+    启动器刻意不引用 Zephyr.Core: 它是以普通权限运行、负责提权的那个进程,
+    能不加载的代码就不加载。但程序名、计划任务名、目录名这些字符串必须与主程序
+    完全一致, 所以把 RuntimeIdentity.cs 链接进这个程序集编译, 而不是引整个 Core。
+  -->
+  <ItemGroup>
+    <Compile Include="..\Zephyr.Core\RuntimeIdentity.cs" Link="RuntimeIdentity.cs" />
+  </ItemGroup>
+
+</Project>

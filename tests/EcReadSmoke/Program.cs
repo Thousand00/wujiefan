@@ -1,9 +1,9 @@
 using System.Diagnostics;
 using System.Text;
-using WujieFan.Core.Ec;
-using WujieFan.Core.Hardware;
-using WujieFan.Core.Config;
-using WujieFan.Core.Providers;
+using Zephyr.Core.Ec;
+using Zephyr.Core.Hardware;
+using Zephyr.Core.Config;
+using Zephyr.Core.Providers;
 
 namespace EcReadSmoke;
 
@@ -20,7 +20,7 @@ namespace EcReadSmoke;
 ///   EcReadSmoke.exe --aida               同时写入 AIDA64 共享内存
 ///   EcReadSmoke.exe --xml                只生成并打印 XML, 不访问硬件
 ///   EcReadSmoke.exe --autostart-test     用指定 exe 路径测试自启动计划任务的解析逻辑 (不创建任务)
-///   EcReadSmoke.exe --autostart-live     真实创建/查询/删除计划任务 WujieFan (需管理员, 会还原)
+///   EcReadSmoke.exe --autostart-live     真实创建/查询/删除计划任务 Zephyr (需管理员, 会还原)
 ///   EcReadSmoke.exe --autostart-cn       中文 exe 路径的自启动回归 (需管理员)
 ///   EcReadSmoke.exe --autostart-upgrade  旧版任务定义被重写修正的回归 (需管理员)
 ///   EcReadSmoke.exe --autostart-on       真正开启开机自启 (需管理员, 会留在系统里)
@@ -55,7 +55,7 @@ internal static class Program
                 case "--autostart-upgrade": autoStartUpgrade = true; break;
                 case "--fanmode-live": fanModeLive = true; break;
                 case "--autostart-on":
-                    autoStartOn = i + 1 < args.Length ? args[++i] : @"E:\WORKS\RTSS-0\dist\app\WujieFan.exe";
+                    autoStartOn = i + 1 < args.Length ? args[++i] : @"E:\WORKS\RTSS-0\dist\app\Zephyr.exe";
                     break;
                 case "--autostart-off":
                     autoStartOn = "";
@@ -173,22 +173,22 @@ internal static class Program
         // (命令行, 本程序路径, 期望是否识别为自己的)
         var cases = new (string Command, string Exe, bool Expected)[]
         {
-            ("\"E:\\WORKS\\RTSS-0\\dist\\app\\WujieFan.exe\" --tray",
-             @"E:\WORKS\RTSS-0\dist\app\WujieFan.exe", true),
+            ("\"E:\\WORKS\\RTSS-0\\dist\\app\\Zephyr.exe\" --tray",
+             @"E:\WORKS\RTSS-0\dist\app\Zephyr.exe", true),
 
-            (@"E:\WORKS\RTSS-0\dist\app\WujieFan.exe",
-             @"E:\WORKS\RTSS-0\dist\app\WujieFan.exe", true),
+            (@"E:\WORKS\RTSS-0\dist\app\Zephyr.exe",
+             @"E:\WORKS\RTSS-0\dist\app\Zephyr.exe", true),
 
-            ("\"E:\\WORKS\\RTSS-0\\dist\\app\\WujieFan.exe\"",
-             @"E:\WORKS\RTSS-0\dist\app\WujieFan.exe", true),
+            ("\"E:\\WORKS\\RTSS-0\\dist\\app\\Zephyr.exe\"",
+             @"E:\WORKS\RTSS-0\dist\app\Zephyr.exe", true),
 
-            ("\"e:\\works\\rtss-0\\dist\\app\\wujiefan.exe\" --tray",
-             @"E:\WORKS\RTSS-0\dist\app\WujieFan.exe", true),
+            ("\"e:\\works\\rtss-0\\dist\\app\\zephyr.exe\" --tray",
+             @"E:\WORKS\RTSS-0\dist\app\Zephyr.exe", true),
 
             ("\"C:\\Other\\Thing.exe\" --tray",
-             @"E:\WORKS\RTSS-0\dist\app\WujieFan.exe", false),
+             @"E:\WORKS\RTSS-0\dist\app\Zephyr.exe", false),
 
-            ("", @"E:\WORKS\RTSS-0\dist\app\WujieFan.exe", false),
+            ("", @"E:\WORKS\RTSS-0\dist\app\Zephyr.exe", false),
         };
 
         int pass = 0, fail = 0;
@@ -220,11 +220,11 @@ internal static class Program
 
     /// <summary>
     /// 真实往返测试: Enable -> IsEnabled -> Disable -> IsEnabled。
-    /// 会创建名为 WujieFan 的计划任务并在结束时删除。需管理员权限。
+    /// 会创建名为 Zephyr 的计划任务并在结束时删除。需管理员权限。
     /// </summary>
     private static int RunAutoStartLive()
     {
-        string exe = @"E:\WORKS\RTSS-0\dist\app\WujieFan.exe";
+        string exe = @"E:\WORKS\RTSS-0\dist\app\Zephyr.exe";
         var mgr = new AutoStartManager(exe);
 
         Console.WriteLine("=== 自启动真实往返测试 ===");
@@ -257,7 +257,7 @@ internal static class Program
         try
         {
             var psi = new System.Diagnostics.ProcessStartInfo("schtasks.exe",
-                "/Query /TN \"WujieFan\" /XML")
+                "/Query /TN \"Zephyr\" /XML")
             { UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true };
             using var pr = System.Diagnostics.Process.Start(psi)!;
             cmd = pr.StandardOutput.ReadToEnd();
@@ -282,13 +282,13 @@ internal static class Program
         bool batteryStop = HasXmlValue(cmd, "StopIfGoingOnBatteries", "false");
         bool unlimited = HasXmlValue(cmd, "ExecutionTimeLimit", "PT0S");
         bool leastPrivilege = HasXmlValueOrAbsent(cmd, "RunLevel", "LeastPrivilege");
-        bool runsLauncher = cmd.IndexOf("WujieFanLauncher.exe", StringComparison.OrdinalIgnoreCase) >= 0;
+        bool runsLauncher = cmd.IndexOf("ZephyrLauncher.exe", StringComparison.OrdinalIgnoreCase) >= 0;
 
         Console.WriteLine($"   DisallowStartIfOnBatteries=false : {(batteryStart ? "OK" : "FAIL 拔电源就不启动")}");
         Console.WriteLine($"   StopIfGoingOnBatteries=false     : {(batteryStop ? "OK" : "FAIL 拔电源就被停")}");
         Console.WriteLine($"   ExecutionTimeLimit=PT0S (无限)   : {(unlimited ? "OK" : "FAIL 会被定时杀掉")}");
         Console.WriteLine($"   RunLevel=LeastPrivilege          : {(leastPrivilege ? "OK" : "FAIL 会以最高权限直启, 托盘图标出不来")}");
-        Console.WriteLine($"   执行 WujieFanLauncher.exe        : {(runsLauncher ? "OK" : "FAIL 任务没指向启动器")}");
+        Console.WriteLine($"   执行 ZephyrLauncher.exe        : {(runsLauncher ? "OK" : "FAIL 任务没指向启动器")}");
 
         var dis = mgr.Disable();
         Console.WriteLine($"4. Disable -> ok={dis.Ok} msg={dis.Message}");
@@ -310,16 +310,16 @@ internal static class Program
     /// 这是 schtasks 输出编码的回归测试: 它的控制台输出是 UTF-8, 若按系统 ANSI
     /// 代码页 (简体中文 = GBK) 解码, 中文路径会变成乱码, IsOurCommand 匹配失败,
     /// 自启动勾选就会永远回弹成"未启用"。
-    /// 用一个独立的任务名, 不会动到真正的 WujieFan 任务。
+    /// 用一个独立的任务名, 不会动到真正的 Zephyr 任务。
     /// </summary>
     private static int RunAutoStartChinese()
     {
-        const string TaskName = "WujieFanCnTest";
+        const string TaskName = "ZephyrCnTest";
 
         // 自启动管理只做字符串比对, 不会去启动 exe; 但 0.2.0 起 Enable() 会先校验
         // 启动器和主程序同目录, 所以这两个文件必须真的存在。用完在 finally 里清掉。
         string cnDir = "E:" + System.IO.Path.DirectorySeparatorChar + "\u6D4B\u8BD5";
-        string exe = System.IO.Path.Combine(cnDir, "WujieFan.exe");
+        string exe = System.IO.Path.Combine(cnDir, "Zephyr.exe");
         string launcher = System.IO.Path.Combine(cnDir, AutoStartManager.LauncherFileName);
 
         var mgr = new AutoStartManager(exe, TaskName);
@@ -400,8 +400,8 @@ internal static class Program
     /// </summary>
     private static int RunAutoStartUpgrade()
     {
-        const string TaskName = "WujieFanUpgradeTest";
-        string exe = @"E:\WORKS\RTSS-0\dist\app\WujieFan.exe";
+        const string TaskName = "ZephyrUpgradeTest";
+        string exe = @"E:\WORKS\RTSS-0\dist\app\Zephyr.exe";
         var mgr = new AutoStartManager(exe, TaskName);
 
         Console.WriteLine("=== 自启动升级路径测试 ===");
@@ -418,7 +418,7 @@ internal static class Program
             try
             {
                 oldXmlPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                    $"wujiefan-oldtask-{Guid.NewGuid():N}.xml");
+                    $"zephyr-oldtask-{Guid.NewGuid():N}.xml");
                 System.IO.File.WriteAllText(oldXmlPath, BuildLegacyTaskXml(exe), System.Text.Encoding.Unicode);
 
                 var (exit, output) = RunSchtasks(
@@ -474,12 +474,12 @@ internal static class Program
             Console.WriteLine($"   ExecutionTimeLimit=PT0S (无限)         : {(newUnlimited ? "OK" : "FAIL 升级后仍会被强制结束")}");
             Console.WriteLine($"   提示文字 = {oneLine}");
 
-            // 托盘图标那一条: 旧定义是 HighestAvailable + 直指 WujieFan.exe, 必须被改成
+            // 托盘图标那一条: 旧定义是 HighestAvailable + 直指 Zephyr.exe, 必须被改成
             // LeastPrivilege + 启动器, 否则升级上来的用户会一直"没有托盘图标"。
             bool newLeastPrivilege = HasXmlValueOrAbsent(newXml, "RunLevel", "LeastPrivilege");
-            bool newRunsLauncher = newXml.IndexOf("WujieFanLauncher.exe", StringComparison.OrdinalIgnoreCase) >= 0;
+            bool newRunsLauncher = newXml.IndexOf("ZephyrLauncher.exe", StringComparison.OrdinalIgnoreCase) >= 0;
             Console.WriteLine($"   RunLevel=LeastPrivilege                 : {(newLeastPrivilege ? "OK" : "FAIL 升级后仍以最高权限直启")}");
-            Console.WriteLine($"   执行 WujieFanLauncher.exe              : {(newRunsLauncher ? "OK" : "FAIL 升级后仍直指主程序")}");
+            Console.WriteLine($"   执行 ZephyrLauncher.exe              : {(newRunsLauncher ? "OK" : "FAIL 升级后仍直指主程序")}");
 
             bool nowCurrent = mgr.IsUpToDate();
             Console.WriteLine($"5. 重写后 IsUpToDate = {nowCurrent}  {(nowCurrent ? "OK 以后启动不再重复重写" : "FAIL 每次启动都会再跑一遍 schtasks")}");
@@ -739,7 +739,7 @@ internal static class Program
     private static int RunAutoStartSet(string exePath)
     {
         bool enable = exePath.Length > 0;
-        string exe = enable ? exePath : @"E:\WORKS\RTSS-0\dist\app\WujieFan.exe";
+        string exe = enable ? exePath : @"E:\WORKS\RTSS-0\dist\app\Zephyr.exe";
 
         var mgr = new AutoStartManager(exe);
 

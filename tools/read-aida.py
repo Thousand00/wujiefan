@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""read-aida.py -- print the XML that WujieFan publishes into "AIDA64_SensorValues".
+"""read-aida.py -- print the XML that Zephyr publishes into "AIDA64_SensorValues".
 
 This named shared memory is the channel RTSS's OverlayEditor reads. Any process
 can own it; whoever creates it first wins the name. Use this script to confirm
-that WujieFan is alive and writing sensible numbers before you go blaming the
+that Zephyr is alive and writing sensible numbers before you go blaming the
 overlay layout.
 
 Usage:
@@ -54,7 +54,7 @@ def main():
         stamp = time.strftime("%H:%M:%S")
 
         if raw is None:
-            print(f"[{stamp}] {MAPPING}: NOT FOUND (WujieFan is not running?)")
+            print(f"[{stamp}] {MAPPING}: NOT FOUND (Zephyr is not running?)")
         else:
             end = raw.find(b"\x00")
             if end < 0:

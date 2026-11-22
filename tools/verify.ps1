@@ -1,12 +1,12 @@
 ﻿<#
 .SYNOPSIS
-    WujieFan 统一验证入口。本地与 CI 共用同一份逻辑，ci.yml 只调用本脚本。
+    Zephyr 统一验证入口。本地与 CI 共用同一份逻辑，ci.yml 只调用本脚本。
 
 .DESCRIPTION
     依次执行（可用开关裁剪）：
       1. 版本一致性：Directory.Build.props <Version> 与三个程序集产物 FileVersion 比对
-      2. 构建：dotnet build WujieFan.sln -c Release（退出码决定成败，另查 0 警告）
-      3. 单测：dotnet test tests/WujieFan.Core.Tests（xUnit）
+      2. 构建：dotnet build Zephyr.sln -c Release（退出码决定成败，另查 0 警告）
+      3. 单测：dotnet test tests/Zephyr.Core.Tests（xUnit）
       4. 回归：EcReadSmoke --autostart-test（免管理员、纯字符串断言）
       5. XML 契约：EcReadSmoke --xml 产出必须可解析为合法 XML 且含预期 AIDA 源 ID
 
@@ -22,7 +22,7 @@
     构建配置，默认 Release。
 
 .PARAMETER MinTestCount
-    单测用例数下限，默认 247（热键往返、EcMutex 归属与重入、AIDA 空帧语义、Load 后热键可解析不变量补齐后的基线）。
+    单测用例数下限，默认 252（在 247 基础上补了改名后旧配置目录迁移的 5 条）。
     只做下界断言，用例增多不会误报；真正的门禁是失败数 = 0。
 
 .PARAMETER SkipBuild
@@ -58,7 +58,7 @@
 [CmdletBinding()]
 param(
     [string]$Configuration = 'Release',
-    [int]$MinTestCount = 247,
+    [int]$MinTestCount = 252,
     [switch]$SkipBuild,
     [switch]$SkipTest,
     [switch]$SkipSmoke,
@@ -184,7 +184,7 @@ function ConvertTo-ShortVersion {
 
 # ---------------------------------------------------------------- 主流程
 
-Write-Head 'WujieFan 统一验证入口 (tools/verify.ps1)'
+Write-Head 'Zephyr 统一验证入口 (tools/verify.ps1)'
 Write-Info "仓库: $script:RepoRoot"
 Write-Info "配置: $Configuration"
 Write-Info "PowerShell: $($PSVersionTable.PSVersion)"
@@ -193,9 +193,9 @@ $failures = @()
 
 # ---- 1. 构建 -------------------------------------------------------------
 if (-not $SkipBuild) {
-    Write-Head "1/5 构建 WujieFan.sln -c $Configuration"
+    Write-Head "1/5 构建 Zephyr.sln -c $Configuration"
 
-    $sln = Join-Path $script:RepoRoot 'WujieFan.sln'
+    $sln = Join-Path $script:RepoRoot 'Zephyr.sln'
     $r = Invoke-Native -FilePath 'dotnet' -Arguments @('build', $sln, '-c', $Configuration)
 
     if ($r.ExitCode -ne 0) {
@@ -240,10 +240,10 @@ if (-not $SkipVersion) {
 
     if ($propsVersion -ne '') {
         $targets = @(
-            @{ Name = 'WujieFan';          Dir = 'src/WujieFan';          File = 'WujieFan.exe' },
-            @{ Name = 'WujieFan.Core';     Dir = 'src/WujieFan.Core';     File = 'WujieFan.Core.dll' },
-            # Launcher 的 AssemblyName 是 WujieFanLauncher，不是项目名
-            @{ Name = 'WujieFan.Launcher'; Dir = 'src/WujieFan.Launcher'; File = 'WujieFanLauncher.exe' }
+            @{ Name = 'Zephyr';          Dir = 'src/Zephyr';          File = 'Zephyr.exe' },
+            @{ Name = 'Zephyr.Core';     Dir = 'src/Zephyr.Core';     File = 'Zephyr.Core.dll' },
+            # Launcher 的 AssemblyName 是 ZephyrLauncher，不是项目名
+            @{ Name = 'Zephyr.Launcher'; Dir = 'src/Zephyr.Launcher'; File = 'ZephyrLauncher.exe' }
         )
 
         foreach ($t in $targets) {
@@ -270,9 +270,9 @@ if (-not $SkipVersion) {
 
 # ---- 3. 单测 -------------------------------------------------------------
 if (-not $SkipTest) {
-    Write-Head '3/5 单测 tests/WujieFan.Core.Tests'
+    Write-Head '3/5 单测 tests/Zephyr.Core.Tests'
 
-    $testProj = Join-Path $script:RepoRoot 'tests/WujieFan.Core.Tests/WujieFan.Core.Tests.csproj'
+    $testProj = Join-Path $script:RepoRoot 'tests/Zephyr.Core.Tests/Zephyr.Core.Tests.csproj'
 
     # 产物必须落到工作区之外。在受限宿主里，产物若生成在仓库内，testhost 启动时会崩在
     # ProcessManager.OpenProcess -> EnsureWatchingForExit (Win32Exception 5: 拒绝访问)。
@@ -427,7 +427,7 @@ if (-not $SkipSmoke) {
 
                 $parsed = $false
                 try {
-                    [xml]$doc = "<wujiefan>$frag</wujiefan>"
+                    [xml]$doc = "<zephyr>$frag</zephyr>"
                     $parsed = $true
                 } catch {
                     Write-Bad "XML 片段无法解析: $($_.Exception.Message)"
@@ -435,19 +435,19 @@ if (-not $SkipSmoke) {
                 }
 
                 if ($parsed) {
-                    Write-Ok 'XML 片段可解析（已套合成根节点 <wujiefan>）'
+                    Write-Ok 'XML 片段可解析（已套合成根节点 <zephyr>）'
 
                     # 这些 ID 就是 tools/add-wujie-layers.py 里 Provider=AIDA 源块的 ID，
                     # 图层名通过 %SourceName% 引用它们，故校验 ID 等价于校验图层契约。
-                    $fanNodes = @($doc.wujiefan.fan)
-                    $tempNodes = @($doc.wujiefan.temp)
+                    $fanNodes = @($doc.zephyr.fan)
+                    $tempNodes = @($doc.zephyr.temp)
 
                     if ($fanNodes.Count -ne 2) {
                         Write-Bad "预期 2 个 <fan>，实际 $($fanNodes.Count)"
                         $failures += "<fan> 数量 $($fanNodes.Count) != 2"
                     }
 
-                    $expectedIds = @('WUJIE_FAN1', 'WUJIE_FAN2')
+                    $expectedIds = @('ZEPHYR_FAN1', 'ZEPHYR_FAN2')
                     foreach ($id in $expectedIds) {
                         $hit = @($fanNodes | Where-Object { $_.id -eq $id })
                         if ($hit.Count -eq 1) {
@@ -465,11 +465,11 @@ if (-not $SkipSmoke) {
                     if ($tempNodes.Count -ne 1) {
                         Write-Bad "预期 1 个 <temp>，实际 $($tempNodes.Count)"
                         $failures += "<temp> 数量 $($tempNodes.Count) != 1"
-                    } elseif ($tempNodes[0].id -ne 'WUJIE_CPUT') {
-                        Write-Bad "温度源 ID 应为 WUJIE_CPUT，实际 $($tempNodes[0].id)"
+                    } elseif ($tempNodes[0].id -ne 'ZEPHYR_CPUT') {
+                        Write-Bad "温度源 ID 应为 ZEPHYR_CPUT，实际 $($tempNodes[0].id)"
                         $failures += "温度源 ID 错误: $($tempNodes[0].id)"
                     } else {
-                        Write-Ok "温度源 WUJIE_CPUT = $($tempNodes[0].value)"
+                        Write-Ok "温度源 ZEPHYR_CPUT = $($tempNodes[0].value)"
                     }
                 }
             }

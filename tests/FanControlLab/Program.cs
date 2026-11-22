@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Text;
-using WujieFan.Core.Ec;
-using WujieFan.Core.Native;
+using Zephyr.Core.Ec;
+using Zephyr.Core.Native;
 
 namespace FanControlLab;
 
@@ -63,7 +63,7 @@ internal static class Program
         string mode = args.Length == 0 ? "status" : args[0].ToLowerInvariant();
         bool apply = args.Contains("--apply");
 
-        Console.WriteLine("=== WujieFan 风扇控制实验台 ===");
+        Console.WriteLine("=== Zephyr 风扇控制实验台 ===");
         Console.WriteLine($"模式: {mode}  写入许可: {(apply ? "允许 (--apply)" : "仅只读")}");
         Console.WriteLine();
 

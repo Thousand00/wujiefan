@@ -15,7 +15,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\WujieFan.Core\WujieFan.Core.csproj" />
+    <ProjectReference Include="..\..\src\Zephyr.Core\Zephyr.Core.csproj" />
   </ItemGroup>
 
 </Project>

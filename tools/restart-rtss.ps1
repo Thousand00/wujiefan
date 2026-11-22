@@ -9,7 +9,7 @@
 #       and non-ASCII bytes can break parsing.
 
 $ErrorActionPreference = "Continue"
-$log = Join-Path $env:TEMP "wujiefan-restart-rtss.log"
+$log = Join-Path $env:TEMP "zephyr-restart-rtss.log"
 
 function Note($msg) {
     "$(Get-Date -Format o)  $msg" | Out-File -FilePath $log -Append -Encoding utf8

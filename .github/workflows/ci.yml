@@ -46,7 +46,7 @@ jobs:
           dotnet --list-sdks
 
       - name: Restore
-        run: dotnet restore WujieFan.sln
+        run: dotnet restore Zephyr.sln
 
       # -FailOnSkip：在 runner 上任何"环境缺失跳过"都必须变红。
       # 这是本仓库唯一需要的 CI 开关——没有这块主板的检查就该报错，
