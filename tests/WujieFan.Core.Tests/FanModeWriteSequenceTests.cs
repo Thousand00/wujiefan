@@ -24,6 +24,58 @@ public class FanModeWriteSequenceTests
         .With(EcRegisters.ModeFlag2, EcRegisters.ModeAuto);
 
     [Fact]
+    public void 模式标志写成功但PWM被吞掉_不能报成功()
+    {
+        // 最阴的一种失败: EC 收下了时序, 模式标志也确实变成了 0xDC,
+        // 但手动 PWM 值没进去, 停在初值 0 —— 于是一个风扇直接停转。
+        // 只回读模式标志的老实现会在这里报"已切到强冷模式 (两个风扇满转)",
+        // 用户看着界面以为好了, 实际 CPU 风扇不转。
+        var fake = IdleEc();
+        fake.SwallowWritesOn.Add(EcRegisters.ManualPwm1);
+        fake.SwallowWritesOn.Add(EcRegisters.ManualPwm2);
+        using var reader = new FanReader(fake);
+
+        FanModeResult result = reader.SetMode(FanMode.StrongCool);
+
+        Assert.False(result.Ok, "PWM 没写进去就不能报成功");
+        Assert.True(result.Indeterminate, "模式已切手动、风扇却在按残留值转, 状态是不确定的");
+        Assert.Contains("手动 PWM", result.Message);
+        // 残留值确实是 0 (IdleEc 里预设的是 120/118, 但被吞掉后不会变)。
+        Assert.Equal(120, fake.Reg(EcRegisters.ManualPwm1));
+    }
+
+    [Fact]
+    public void 一个风扇的PWM被吞掉_也不能报成功()
+    {
+        // 单侧失败比两侧更容易被忽略: 另一个风扇确实满转, 听起来风扇是响的。
+        var fake = IdleEc();
+        fake.SwallowWritesOn.Add(EcRegisters.ManualPwm2);
+        using var reader = new FanReader(fake);
+
+        FanModeResult result = reader.SetMode(FanMode.StrongCool);
+
+        Assert.False(result.Ok);
+        Assert.True(result.Indeterminate);
+        Assert.Contains("Fan2=118", result.Message);
+    }
+
+    [Fact]
+    public void PWM回读失败_同样报不确定而不是成功()
+    {
+        // 标志读得出来、PWM 读不出来。既然无法确认 PWM 生效, 就不能说满转。
+        var fake = IdleEc();
+        fake.FailReadsOn.Add(EcRegisters.ManualPwm1);
+        fake.FailReadsOnlyAfterWrites = true;
+        using var reader = new FanReader(fake);
+
+        FanModeResult result = reader.SetMode(FanMode.StrongCool);
+
+        Assert.False(result.Ok);
+        Assert.True(result.Indeterminate);
+        Assert.Contains("回读确认失败", result.Message);
+    }
+
+    [Fact]
     public void 切强冷_先写PWM再写模式标志()
     {
         var fake = IdleEc();
@@ -106,11 +158,27 @@ public class FanModeWriteSequenceTests
 
         // 快照必须在任何写入之前: 拿到"我们进来时 EC 本来是什么样",
         // 否则回滚会把我们自己写进去的值当成原始值还原。
-        int firstWriteIdx = fake.Reads.Count;   // Reads 记录的是读, 只用于断言存在性
-        Assert.True(fake.Reads.Count >= 4, "写入前应至少读四个寄存器做快照");
-        Assert.Contains(EcRegisters.ManualPwm1, fake.Reads);
-        Assert.Contains(EcRegisters.ManualPwm2, fake.Reads);
-        _ = firstWriteIdx;
+        //
+        // 这条断言原来写的是 fake.Reads.Count / Contains —— 两个都只看"读过这些地址",
+        // 把快照挪到写入之后照样能过, 等于什么都没验证。用 Ops 这条同一时间线才判得动先后。
+        //
+        // 只看"第一次"读: 写完之后还有一次 PWM 回读确认 (0.6 新增的假成功防护),
+        // 那次读本来就在写入之后, 不能拿它当快照。
+        int firstReadOfSnapshot = -1;
+        int firstWrite = -1;
+        for (int i = 0; i < fake.Ops.Count; i++)
+        {
+            var (isRead, address, _) = fake.Ops[i];
+            if (isRead && address is EcRegisters.ManualPwm1 or EcRegisters.ManualPwm2 && firstReadOfSnapshot < 0)
+                firstReadOfSnapshot = i;
+            if (!isRead && firstWrite < 0)
+                firstWrite = i;
+        }
+
+        Assert.True(firstReadOfSnapshot >= 0, "应该读过 ManualPwm1 / ManualPwm2");
+        Assert.True(firstWrite >= 0, "应该发生过写入");
+        Assert.True(firstReadOfSnapshot < firstWrite,
+            $"快照读 (第 {firstReadOfSnapshot} 次操作) 必须早于第一次写入 (第 {firstWrite} 次操作)");
     }
 
     [Fact]

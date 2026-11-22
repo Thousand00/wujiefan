@@ -11,6 +11,9 @@ internal static class Program
     /// <summary>唤醒事件名。二次启动的进程 Set 一下就走, 主实例的后台线程负责把窗口拽回前台。</summary>
     private const string ShowWindowEventName = @"Global\WujieFan_ShowWindow";
 
+    /// <summary>ui.log 超过这个大小就滚成 ui.log.1 (留作上一次的现场)。</summary>
+    private const long UiLogMaxBytes = 64 * 1024;
+
     /// <summary>
     /// 把一条消息追加到 %LOCALAPPDATA%\WujieFan\ui.log。
     ///
@@ -25,10 +28,28 @@ internal static class Program
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WujieFan");
             Directory.CreateDirectory(dir);
 
+            string path = Path.Combine(dir, "ui.log");
+
+            // 单文件轮转。这个进程会常驻好几天, 而"托盘重连失败""RTSS 发布失败"
+            // 这类消息每秒都可能写一条; 不封顶的话日志会一路涨到几百 MB,
+            // 用户查问题时反而更难找到最近那几条。只留一代 (.1), 够复盘最近一次现场。
+            try
+            {
+                var info = new FileInfo(path);
+                if (info.Exists && info.Length > UiLogMaxBytes)
+                {
+                    File.Move(path, path + ".1", overwrite: true);
+                }
+            }
+            catch
+            {
+                // 轮转失败就继续往原文件里写, 不能因此丢日志。
+            }
+
             string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff")
                           + " [" + Environment.ProcessId + "] " + message + Environment.NewLine;
 
-            File.AppendAllText(Path.Combine(dir, "ui.log"), line, new UTF8Encoding(false));
+            File.AppendAllText(path, line, new UTF8Encoding(false));
         }
         catch
         {

@@ -149,14 +149,27 @@ internal sealed class FanModeController
         if (reader is null || !reader.IsOpen)
             return (false, "EC 设备还没打开, 现在不能切换。");
 
-        // 拿当前意图取反: 强冷中 -> 交还自动; 自动中 -> 进强冷。
-        FanMode target = _strongCoolIntent ? FanMode.Auto : FanMode.StrongCool;
+        // 取反的依据是"用户看见的状态", 不是"上一拍的意图"。
+        //
+        // 两者在正常情况下一致, 但 Observe() 里有一条路径会让它们分叉:
+        // EC 里的强冷标志被别的软件改回自动时, 界面已经同步成自动并给了警告,
+        // 而 _strongCoolIntent 也被置回了 false —— 这一支是同步的, 所以用勾选框
+        // 和用意图结果相同。真正要防的是**勾选框还没被 Observe 校准**的那一小段:
+        // 用户在托盘里按热键时, 勾选框是最后一次 UI 更新的结果, 也就是用户眼里
+        // 的当前状态。按它取反, 用户按一下看到的就一定与自己预期一致。
+        FanMode target = _row.Checked ? FanMode.Auto : FanMode.StrongCool;
 
-        SetMode(target, userInitiated: false);
+        FanModeResult result = SetMode(target, userInitiated: false);
 
-        // SetMode 失败时会把意图清成 false, 所以"意图是否等于目标"就是成功与否。
-        bool reached = _strongCoolIntent == (target == FanMode.StrongCool);
-        if (!reached) return (false, "风扇模式切换失败。");
+        // 必须按 SetMode 的真实结果判成败。
+        //
+        // 旧实现用"意图是否等于目标"反推: target 是自动时, 失败分支会把意图清成 false,
+        // 而 "target == StrongCool" 也是 false —— 两边相等, 于是失败被报成成功,
+        // 托盘弹"已交还自动模式", 实际风扇还在手动 184 满转。这是最坏的一种谎。
+        if (!result.Ok)
+        {
+            return (false, result.Message.Length > 0 ? result.Message : "风扇模式切换失败。");
+        }
 
         return target == FanMode.StrongCool
             ? (true, "强冷已开启: 两个风扇满转。")
@@ -348,9 +361,11 @@ internal sealed class FanModeController
     /// 用户亲手点的 (要弹失败提示、失败要回滚勾选) 还是程序自己做的
     /// (启动归一化、过热保护、退出恢复 —— 静默进行, 失败只写状态栏)。
     /// </param>
-    public void SetMode(FanMode mode, bool userInitiated, string? reason = null)
+    /// <returns>真实结果。调用方必须按它判定成败, <b>不能用意图反推</b>。</returns>
+    public FanModeResult SetMode(FanMode mode, bool userInitiated, string? reason = null)
     {
-        if (_busy) return;
+        if (_busy)
+            return FanModeResult.Failure("正在切换风扇模式, 请稍候再试。");
 
         _busy = true;
         try
@@ -363,17 +378,24 @@ internal sealed class FanModeController
                     DarkDialog.Show(_owner, "风扇模式", "设备还没打开, 现在不能切换风扇模式。", DarkDialog.Tone.Warning);
                     RevertCheck();
                 }
-                return;
+                return FanModeResult.Failure("EC 设备还没打开, 现在不能切换。");
             }
 
             FanModeResult result = reader.SetMode(mode);
 
-            // 无论成败都记住用户的选择:
-            //   成功 -> 下次开机按这个模式归一化;
-            //   失败 -> 用户确实想要这个模式, 下次启动会再试一次。
-            // 但"用户选择"和"EC 实际状态"是两件事, 徽章只信后者。
-            _settings.FanMode = mode;
-            _settings.Save();
+            // 只在硬件接受之后才把模式记进设置。
+            //
+            // 旧实现无论成败都写 _settings.FanMode = mode, 于是"切换失败"也被记成
+            // 用户想要强冷 —— 下次开机 NormalizeOnStartup 会再试一次这个从未成功过的动作,
+            // 每一轮启动都要撞一次 K 硬件拒绝。设置里存的应该是"已经生效的状态",
+            // 而不是"用户点过但没成功"的意图。
+            bool remembered = result.Ok || (mode == FanMode.Auto && !result.Indeterminate);
+            if (remembered)
+            {
+                _settings.FanMode = mode;
+                if (!_settings.Save())
+                    UiLog($"保存风扇模式失败: {AppSettings.LastError ?? "未知原因"}");
+            }
 
             UpdateUi(result.State);
 
@@ -442,6 +464,8 @@ internal sealed class FanModeController
                     }
                 }
             }
+
+            return result;
         }
         finally
         {
@@ -504,42 +528,53 @@ internal sealed class FanModeController
 
         // 先改设置再动硬件: 万一 SetMode 抛异常, 至少下次启动不会再拉满。
         _settings.FanMode = FanMode.Auto;
-        _settings.Save();
+
+        // 失败只记日志: 这条路径是退出/看门狗兜底, 此刻弹框会挡住关机或打断轮询。
+        // 真正的风险是"设置里写着自动、磁盘上还是强冷", 所以至少要在 ui.log 留痕。
+        if (!_settings.Save())
+            UiLog("保存模式=自动 失败: " + (AppSettings.LastError ?? "未知原因"));
 
         _suppressEvent = true;
         try { _row.SetCheckedSilently(false); }
         finally { _suppressEvent = false; }
 
         FanReader? reader = _reader();
-        if (reader is { IsOpen: true })
+        if (reader is not { IsOpen: true })
         {
-            FanModeResult r = reader.SetMode(FanMode.Auto);
-            if (!r.Ok)
+            // 设备没打开 = 一个字也没写进 EC。这时绝不能报"已交还自动模式":
+            // 用户从托盘点的这一下, 看到的应该是"现在连不上设备", 而不是一句
+            // 听上去已经完成的话 —— 否则风扇真在满转时, 他会以为问题解决了。
+            UiLog("RestoreAuto (" + why + "): 设备未打开, 没有可交还的对象");
+            _setStatus("EC 设备当前没有打开, 没能交还自动模式。", Theme.Warn);
+            return;
+        }
+
+        FanModeResult r = reader.SetMode(FanMode.Auto);
+        if (!r.Ok)
+        {
+            UiLog("RestoreAuto (" + why + ") FAILED: " + r.Message);
+
+            // 连"回滚到自动"都失败: 我们不能假装已经恢复。徽章改为"未知",
+            // 并且复用 _emergencyRestored 把看门狗按住, 不要每轮再叠一次写。
+            if (r.Indeterminate)
             {
-                UiLog("RestoreAuto (" + why + ") FAILED: " + r.Message);
+                UiLog("RestoreAuto INDETERMINATE: " + r.Message);
+                _emergencyRestored = true;
+                UpdateUi(FanModeState.Unknown);
+                _setStatus(r.Message, Theme.Err);
 
-                // 连"回滚到自动"都失败: 我们不能假装已经恢复。徽章改为"未知",
-                // 并且复用 _emergencyRestored 把看门狗按住, 不要每轮再叠一次写。
-                if (r.Indeterminate)
-                {
-                    UiLog("RestoreAuto INDETERMINATE: " + r.Message);
-                    _emergencyRestored = true;
-                    UpdateUi(FanModeState.Unknown);
-                    _setStatus(r.Message, Theme.Err);
-
-                    // 读失败触发时 EC 本来就通不了, 这时弹模态框只会把界面锁死在
-                    // 每秒一次失败的循环里; 状态栏的红色错误已经足够醒目。
-                    if (why != ReadFailReason && why != TempUnknownReason && why != "程序退出")
-                        DarkDialog.Show(_owner, "风扇状态不确定", r.Message, DarkDialog.Tone.Error);
-                    return;
-                }
-
-                _setStatus("恢复自动风扇失败: " + r.Message, Theme.Err);
+                // 读失败触发时 EC 本来就通不了, 这时弹模态框只会把界面锁死在
+                // 每秒一次失败的循环里; 状态栏的红色错误已经足够醒目。
+                if (why != ReadFailReason && why != TempUnknownReason && why != "程序退出")
+                    DarkDialog.Show(_owner, "风扇状态不确定", r.Message, DarkDialog.Tone.Error);
                 return;
             }
 
-            UpdateUi(FanModeState.Auto);
+            _setStatus("恢复自动风扇失败: " + r.Message, Theme.Err);
+            return;
         }
+
+        UpdateUi(FanModeState.Auto);
 
         UiLog("RestoreAuto (" + why + ") ok");
 
@@ -581,13 +616,20 @@ internal sealed class FanModeController
     }
 
     /// <summary>
-    /// 关机/注销/退出前把 EC 收回自动。只在 EC 确实停在强冷时才写, 少一次无谓的写。
+    /// 关机/注销/退出前把 EC 收回自动。
+    ///
+    /// 判据是"确认处于自动才跳过", 而不是"只有强冷才交还":
+    /// Mixed (两路标志不一致, 例如 Fan1=0xDC / Fan2=0x00) 恰恰是最该收手的状态 ——
+    /// 一个风扇还在按手动 184 满转, 而另一个已经交还 EC, 这种分裂残留如果留在
+    /// 关机时刻, 下次开机就是"一个满转一个不转"的怪状态。Unknown 才真的没得做。
     /// </summary>
     public void RestoreAutoOnShutdown()
     {
         FanReader? reader = _reader();
         if (reader is not { IsOpen: true }) return;
-        if (reader.ReadModeState() != FanModeState.StrongCool) return;
+
+        FanModeState before = reader.ReadModeState();
+        if (before is FanModeState.Auto or FanModeState.Unknown) return;
 
         FanModeResult r = reader.SetMode(FanMode.Auto);
 

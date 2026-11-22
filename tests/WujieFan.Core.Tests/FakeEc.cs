@@ -19,6 +19,13 @@ internal sealed class FakeEc : IEcTransport
     /// <summary>按调用先后记录的读取地址。</summary>
     public List<ushort> Reads { get; } = new();
 
+    /// <summary>
+    /// 把读和写放进同一条时间线。Reads/Writes 两个独立列表看不出交错顺序,
+    /// 于是"快照必须在写入之前"这类断言写出来是假的 —— 把快照挪到写之后照样绿。
+    /// 需要判先后的时候用这个。
+    /// </summary>
+    public List<(bool IsRead, ushort Address, int Value)> Ops { get; } = new();
+
     /// <summary>这些地址的写入会抛异常, 模拟 EC 拒绝/总线错误。</summary>
     public HashSet<ushort> FailWritesOn { get; } = new();
 
@@ -53,6 +60,7 @@ internal sealed class FakeEc : IEcTransport
     public int Read(ushort address)
     {
         Reads.Add(address);
+        Ops.Add((true, address, 0));
         if (FailReadsOn.Contains(address) && (!FailReadsOnlyAfterWrites || Writes.Count > 0))
             throw new EcException($"模拟回读失败 0x{address:X4}");
         return _regs.TryGetValue(address, out int v) ? v : 0;
@@ -67,6 +75,7 @@ internal sealed class FakeEc : IEcTransport
             throw new EcException($"模拟 EC 首次写入 0x{address:X4} 失败");
 
         Writes.Add((address, value));
+        Ops.Add((false, address, value));
         if (!SwallowWritesOn.Contains(address)) _regs[address] = value;
     }
 

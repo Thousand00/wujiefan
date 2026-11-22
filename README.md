@@ -20,7 +20,7 @@ RTSS 自带的数据提供方（AIDA / HwInfo / MSI Afterburner / LHM / PresentM
 
 | 包 | 大小 | 前提 |
 |---|---|---|
-| `WujieFan-<版本>-win-x64.zip` | 约 245 KiB | 需 .NET 8 桌面运行时 |
+| `WujieFan-<版本>-win-x64.zip` | 约 250 KiB | 需 .NET 8 桌面运行时 |
 | `WujieFan-<版本>-win-x64-portable.zip` | 约 94 MiB | 免运行时，解压即用 |
 
 两个包解压后都是 6 个文件：
@@ -171,7 +171,7 @@ Esc 取消。这个热键在任何程序里都有效，按一下就在「强冷�
 - **写 EC 的地方只有「强冷模式」一处**，只写四个寄存器：两个手动 PWM 值（`0x021E`/`0x029E`）和两个模式标志（`0x021F`/`0x029F`）。不碰风扇曲线表、不碰阈值、不改 NVRAM。自动模式下完全不写 EC，只读。
 - **RTSS 需 7.3.x**，`Plugins\Client\Overlays` 里的布局文件请自行备份。
 - **布局文件编码是混合的**（OEM 自带图层名是 GBK 字节），脚本用 latin-1 读写以保持字节不变。不要用记事本另存为 UTF-8，否则中文图层名会变乱码。
-- **`LpcIO.bin` 是 LGPL 2.1**，本程序把它作为嵌入资源分发，因此同样适用 LGPL 2.1：可以替换。源码与许可见 <https://github.com/namazso/PawnIO>。
+- **`LpcIO.bin` 是 LGPL 2.1**，本程序把它作为嵌入资源编译进 `WujieFan.Core.dll` 一起分发，因此同样适用 LGPL 2.1。它是嵌入资源而不是外部文件，所以**不能只替换发布包里的某个文件**来换掉它；要替换需自行从源码重新构建（源码与许可见 <https://github.com/namazso/PawnIO>）。
 
 ## 文档
 

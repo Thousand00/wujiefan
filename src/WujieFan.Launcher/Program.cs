@@ -178,17 +178,25 @@ internal static class Program
             Log("integrity=" + status + " " + detail);
         }
 
-        // 只有在"确实发现不一致"时才拦人。清单缺失/校验出错属于"没能力判断"，
-        // 不该让每一个开发构建或旧发布包都弹窗 —— 记日志即可。
+        // 拦截分两档, 区别在于"要不要打扰用户":
+        //
+        //   确认不一致 (Mismatch / PinsInvalid) → 拦下来并弹窗问用户;
+        //   没能力判断 (PinsMissing / CheckError) → 也拦下来, 但不弹窗, 只记日志。
+        //
+        // 第二档以前是"什么都不做"。那样一来, 只要把清单文件删掉 (或让它读不出来),
+        // 程序就能照常以 --tray 静默常驻后台 —— 完整性校验等于提供了一个
+        // "删一个文件即可完全绕过"的开关。默认不弹窗是为了不打扰开发构建,
+        // 但"不打扰"不等于"放行": 无法核实就退回前台可见启动, 不能悄悄常驻。
         bool suspicious = status is Integrity.Mismatch or Integrity.PinsInvalid;
+
+        if (status != Integrity.Verified && wantBackground)
+        {
+            forwarded = forwarded.Where(a => !a.Equals("--tray", StringComparison.OrdinalIgnoreCase)).ToArray();
+            Log("background start refused: integrity=" + status + " " + detail);
+        }
+
         if (suspicious)
         {
-            if (wantBackground)
-            {
-                forwarded = forwarded.Where(a => !a.Equals("--tray", StringComparison.OrdinalIgnoreCase)).ToArray();
-                Log("background start refused due to integrity failure; falling back to manual start");
-            }
-
             string message =
                 "WujieFan 的程序文件与随包发布的完整性清单不一致。\r\n\r\n" +
                 detail + "\r\n\r\n" +

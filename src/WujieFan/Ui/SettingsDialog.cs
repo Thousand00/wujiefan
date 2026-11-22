@@ -248,7 +248,24 @@ internal sealed class SettingsDialogForm : Form
         _holdBox.KeyDown += (_, e) => Nudge(e, _holdBox,
             AppSettings.EmergencyHoldSamplesMin, AppSettings.EmergencyHoldSamplesMax);
 
+        // 录制中点到输入框时必须先结束录制。
+        //
+        // 窗体的 OnMouseDown 收不到子控件上的点击: 点 TextBox 时消息直接给了 TextBox,
+        // 于是 _recording 一直挂着, 而 KeyPreview + 录制优先会把每一个数字键都判成
+        // "缺修饰键"再 SuppressKeyPress —— 输入框完全打不进字, Alt+F4 也被吞掉,
+        // 用户只能按 Esc 脱身。Enter/鼠标进入都当作"我不想录了"。
+        _tempBox.Enter += (_, _) => CancelRecordingIfAny();
+        _holdBox.Enter += (_, _) => CancelRecordingIfAny();
+        _autoStartRow.Enter += (_, _) => CancelRecordingIfAny();
+        _rtssRow.Enter += (_, _) => CancelRecordingIfAny();
+
         Controls.AddRange(new Control[] { _autoStartRow, _rtssRow, _tempBox, _holdBox });
+    }
+
+    /// <summary>正在录制就结束它, 并明确告诉用户原快捷键没变。</summary>
+    private void CancelRecordingIfAny()
+    {
+        if (_recording) StopRecording("已取消录制, 原来的快捷键不变。");
     }
 
     /// <summary>

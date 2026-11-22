@@ -52,10 +52,15 @@ public static class SupportedHardware
                         || Contains(id.BaseBoardManufacturer, p.Manufacturer);
             if (!makerOk) continue;
 
-            bool modelOk = AnyContains(id.SystemProductName, p.ProductNames)
-                        || AnyContains(id.BaseBoardProduct, p.BaseBoardProducts)
-                        || AnyContains(id.SystemSku, p.ProductNames)
-                        || AnyContains(id.SystemFamily, p.ProductNames);
+            // 机型用**精确相等** (空白归一化后) 而不是子串匹配。
+            //
+            // 子串匹配会把「WUJIE 14 Pro」「WUJIE 14 SE」这类同系列不同型号的机器
+            // 一起放进来 —— 而它们的 EC 风扇寄存器很可能整体不同 (见文件头注释)。
+            // 宁可让用户在"强行继续"里自己选, 也不要默默把一个未验证的型号当验证过的用。
+            bool modelOk = AnyEquals(id.SystemProductName, p.ProductNames)
+                        || AnyEquals(id.BaseBoardProduct, p.BaseBoardProducts)
+                        || AnyEquals(id.SystemSku, p.ProductNames)
+                        || AnyEquals(id.SystemFamily, p.ProductNames);
             if (!modelOk) continue;
 
             matched = p;
@@ -103,6 +108,52 @@ public static class SupportedHardware
 
     private static bool AnyContains(string haystack, IEnumerable<string> needles) =>
         needles.Any(n => Contains(haystack, n));
+
+    /// <summary>
+    /// 归一化后精确相等: 折叠连续空白、去掉首尾空白、忽略大小写。
+    ///
+    /// SMBIOS 里的型号写法常有细微差别 (多余空格、"14 ＋" 全角加号之类),
+    /// 所以不能直接用 ==; 但也不能退化成子串匹配 —— 那会把同系列其它型号放进来。
+    /// </summary>
+    private static bool AnyEquals(string haystack, IEnumerable<string> needles)
+    {
+        string h = Normalize(haystack);
+        if (h.Length == 0) return false;
+        return needles.Any(n => Normalize(n) == h);
+    }
+
+    private static string Normalize(string s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return "";
+
+        var sb = new System.Text.StringBuilder(s.Length);
+        bool lastWasSpace = false;
+
+        foreach (char ch in s)
+        {
+            // 全角加号/空格统一成半角, 免得 "WUJIE 14＋" 与 "WUJIE 14+" 判成不同型号。
+            char c = ch switch
+            {
+                '＋' => '+',
+                '\u3000' => ' ',
+                _ => ch,
+            };
+
+            if (char.IsWhiteSpace(c))
+            {
+                if (lastWasSpace) continue;
+                lastWasSpace = true;
+                sb.Append(' ');
+            }
+            else
+            {
+                lastWasSpace = false;
+                sb.Append(char.ToUpperInvariant(c));
+            }
+        }
+
+        return sb.ToString().Trim();
+    }
 }
 
 /// <summary>硬件校验结果。</summary>

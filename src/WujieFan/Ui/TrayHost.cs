@@ -219,7 +219,12 @@ internal sealed class TrayHost : IDisposable
         {
             _icon.Visible = false;
             _icon.ContextMenuStrip?.Dispose();
+
+            // NotifyIcon.Dispose() 不会释放赋给它的 Icon: 那个图标句柄归调用方。
+            // 不单独释放的话, 每次重建托盘图标都会漏一个 HICON。
+            Icon? trayIcon = _icon.Icon;
             _icon.Dispose();
+            trayIcon?.Dispose();
             _icon = null;
         }
 

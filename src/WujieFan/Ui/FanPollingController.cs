@@ -36,6 +36,18 @@ internal sealed class FanPollingController
     /// </summary>
     private bool _giveUpOpening;
 
+    /// <summary>自动重连失败后的退避: 当前等待秒数 (0 表示没有在退避)。</summary>
+    private int _openBackoffSeconds;
+
+    /// <summary>下一次允许尝试自动重连的时刻。早于此刻的 Poll 直接返回。</summary>
+    private DateTime _nextOpenAttemptUtc = DateTime.MinValue;
+
+    /// <summary>首次重连失败后等 2 秒再试 —— 一次偶发失败不值得等太久。</summary>
+    private const int MinOpenBackoffSeconds = 2;
+
+    /// <summary>退避上限。持续失败时每 30 秒试一次, 足够把设备接回来而不至于刷屏。</summary>
+    private const int MaxOpenBackoffSeconds = 30;
+
     public FanPollingController(
         Form owner,
         AppSettings settings,
@@ -56,7 +68,7 @@ internal sealed class FanPollingController
         _setStatus = setStatus;
 
         _timer.Interval = Math.Clamp(_settings.PollIntervalMs, 200, 10000);
-        _timer.Tick += (_, _) => Poll();
+        _timer.Tick += (_, _) => RunPollSafely();
     }
 
     /// <summary>当前 EC 读取器。未打开或打开失败时为 null, 调用方必须自行判空。</summary>
@@ -86,6 +98,11 @@ internal sealed class FanPollingController
             _giveUpOpening = false;
             _consecutiveErrors = 0;
 
+            // 成功一次就清掉退避: 不管是自动重连还是用户手动重试接回来的,
+            // 都不该继续被之前的等待时间挡着。
+            _openBackoffSeconds = 0;
+            _nextOpenAttemptUtc = DateTime.MinValue;
+
             _setStatus(
                 _settings.ForceUnsupported
                     ? $"已连接 · PawnIO {_reader.PawnIoVersion} · 已跳过机型校验"
@@ -109,7 +126,13 @@ internal sealed class FanPollingController
             // 那会让程序从此再也不采样, 而界面上只留一句"机型不受支持"。
             _giveUpOpening = interactive;
 
-            if (interactive) ShowBlockingMessage(ex.Reason, ex.Guidance);
+            // 用户选了"继续"时, ShowBlockingMessage 内部已经用 force 重开过一次,
+            // 而且成功了(状态栏已写成"已连接 · 已跳过机型校验")。
+            // 这里如果接着往下走, 会把那条成功提示覆盖成红字"读取失败" 并 return false,
+            // 而设备其实正在正常轮询 —— 状态栏从此永远停在一个假的失败上。
+            if (interactive && ShowBlockingMessage(ex.Reason, ex.Guidance) && _reader is not null)
+                return true;
+
             _setStatus(_settings.ForceUnsupported
                 ? "机型不受支持 (已选择强行读取), 读取失败"
                 : "机型不受支持, 已停止读取", Theme.Err);
@@ -124,28 +147,39 @@ internal sealed class FanPollingController
         }
     }
 
-    /// <summary>询问用户是否在机型不符的情况下继续。用户点"继续"就直接重新打开。</summary>
-    private void ShowBlockingMessage(string reason, string guidance)
+    /// <summary>
+    /// 询问用户是否在机型不符的情况下继续。用户点"继续"就直接重新打开。
+    /// </summary>
+    /// <returns>用户选了继续并且重新打开成功时为 true。</returns>
+    private bool ShowBlockingMessage(string reason, string guidance)
     {
         bool go = DarkDialog.Ask(_owner, "硬件不受支持",
             reason + "\n\n" + guidance + "\n\n是否仍然继续? (可能显示错误的风扇转速)",
             yes: "继续读取", no: "取消", tone: DarkDialog.Tone.Warning);
 
-        if (!go) return;
+        if (!go) return false;
 
         _settings.ForceUnsupported = true;
-        _settings.Save();
+
+        // 用户已经明确选了"继续", 所以不因为存盘失败就回退这次打开 ——
+        // 但下次启动会再问一遍, 这个后果要说清楚, 否则用户以为"以后不再问了"。
+        if (!_settings.Save())
+            UiLog("保存 ForceUnsupported=true 失败: " + (AppSettings.LastError ?? "未知原因"));
 
         // 重新打开一次。这一步失败也不再弹第二个对话框。
         _giveUpOpening = false;
-        Open(interactive: false);
+        return Open(interactive: false);
     }
 
     /// <summary>清掉"跳过机型校验"的标志并重新检测。托盘菜单用, 给用户一个反悔的入口。</summary>
     public void RetryHardwareCheck()
     {
         _settings.ForceUnsupported = false;
-        _settings.Save();
+
+        // 存盘失败时内存里已是 false, 所以本次检测照常按"不跳过校验"进行;
+        // 但下次启动会重新读回磁盘上的 true, 用户会觉得"点了没记住"。
+        if (!_settings.Save())
+            UiLog("保存 ForceUnsupported=false 失败: " + (AppSettings.LastError ?? "未知原因"));
         _giveUpOpening = false;
         Close();
         Open(interactive: true);
@@ -163,6 +197,25 @@ internal sealed class FanPollingController
     /// 一次轮询。定时器、启动、休眠恢复、托盘重试都会调它 —— 四种入口共用同一段逻辑,
     /// 免得"启动时做了什么、恢复时少做了什么"这类差异慢慢长出来。
     /// </summary>
+    /// <summary>
+    /// 定时器回调的兜底壳: 任何未预期异常都不能从 Tick 里冒出去。
+    /// WinForms 的定时器回调抛异常会走 Application.ThreadException,
+    /// 在默认配置下就是"程序崩溃"的对话框 —— 每 1 秒一次的机会, 不值得赌。
+    /// 这里只记日志 + 状态栏提示, 下一拍照常继续 (设备可能只是这一拍出问题)。
+    /// </summary>
+    private void RunPollSafely()
+    {
+        try
+        {
+            Poll();
+        }
+        catch (Exception ex)
+        {
+            _setStatus("采样时出现异常, 已跳过这一拍: " + ex.Message, Theme.Err);
+            UiLog("Poll 异常: " + ex);
+        }
+    }
+
     public void Poll()
     {
         if (_reader is null || !_reader.IsOpen)
@@ -171,9 +224,25 @@ internal sealed class FanPollingController
             // 否则会每秒重开一次设备、每秒再弹一个对话框。
             if (_giveUpOpening) return;
 
+            // 自动重连要退避。每次 Open 都会 new PawnIO、加载 LpcIO.bin、探测端口,
+            // 失败时还要写一次状态栏 (会触发整个窗口 Relayout)。
+            // 不节流的话, 设备拔掉/驱动没起来的那种持续失败会变成
+            // 「每秒重建设备 + 每秒重绘整窗」的风暴, 而用户看到的只是一行错误。
+            // 首次失败后从 2 秒起翻倍, 封顶 30 秒; 成功一次就清零。
+            if (_nextOpenAttemptUtc > DateTime.UtcNow) return;
+
             // 设备可能因为休眠/驱动重启而失效, 定期尝试重连。
             // 这里绝不能弹对话框: 定时器每秒跑一次。
-            if (!Open(interactive: false)) return;
+            if (!Open(interactive: false))
+            {
+                _openBackoffSeconds = Math.Min(
+                    Math.Max(_openBackoffSeconds * 2, MinOpenBackoffSeconds), MaxOpenBackoffSeconds);
+                _nextOpenAttemptUtc = DateTime.UtcNow.AddSeconds(_openBackoffSeconds);
+                return;
+            }
+
+            _openBackoffSeconds = 0;
+            _nextOpenAttemptUtc = DateTime.MinValue;
         }
 
         FanSample sample = _reader!.Read();
@@ -231,7 +300,11 @@ internal sealed class FanPollingController
         // 读不稳定/越界优先报 "--"; 只有在读数可信时,"0" 才真的代表风扇停了。
         if (!f.IsValid) return "--";
         if (f.IsStopped) return "0";
-        return f.Rpm >= 9999 ? ">9999" : f.Rpm.ToString();
+
+        // 不截断成 ">9999": RTSS 那边写的是原始数字 (例如 10029),
+        // 界面和 overlay 显示成两个不同的值会让人以为哪边坏了。
+        // 数字太长时由卡片自己按宽度省略, 而不是在这里改写数值本身。
+        return f.Rpm.ToString();
     }
 
     private static byte[] LoadLpcIoBlob()
@@ -251,4 +324,6 @@ internal sealed class FanPollingController
 
         throw new FileNotFoundException("找不到 LpcIO.bin 嵌入资源。");
     }
+
+    private static void UiLog(string message) => global::WujieFan.Program.UiLog(message);
 }

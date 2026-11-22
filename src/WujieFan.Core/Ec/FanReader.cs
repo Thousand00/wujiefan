@@ -22,6 +22,16 @@ public sealed class FanReader : IDisposable
     private bool _disposed;
 
     /// <summary>
+    /// 只读模式: 机型/固件未经验证、由用户选择"强行继续"时置位。
+    /// 此时读可以继续 (哪怕数字可能不对), 但 SetMode 一律拒绝 ——
+    /// 往未知机器的寄存器里写值不是"试试看"该有的权限。
+    /// </summary>
+    private bool _readOnly;
+
+    /// <summary>当前是否处于"强行继续"的只读模式 (界面可据此提示用户为什么不能切强冷)。</summary>
+    public bool IsReadOnly => _readOnly;
+
+    /// <summary>
     /// 等待 EC 互斥量的超时。
     /// 这把锁是"君子协定": 拿到就规规矩矩地读; 拿不到也不放弃采样 ——
     /// 界面每停一秒不刷新, 用户都会以为程序挂了, 而只读采样本身有防撕裂保护兜底。
@@ -97,6 +107,16 @@ public sealed class FanReader : IDisposable
             if (!Verdict.IsSupported)
                 throw new HardwareNotSupportedException(Verdict.Title, Verdict.Detail);
         }
+        else
+        {
+            // 强行继续 (机型/固件未验证) 时只允许读, 不允许写。
+            //
+            // 理由: 寄存器地址是逐字节对着特定固件逆向出来的。读错了顶多显示一个
+            // 错误的风扇转速, 用户看得见、能判断"这数不对"; 而**写**错了是把
+            // 未知机器的电源/风扇/充电寄存器改成某个具体值 —— 后果不可见、不可逆,
+            // 也不该由"我想试试"这个选项承担。所以 force 只解锁观察, 不解锁控制。
+            _readOnly = true;
+        }
 
         _io = new PawnIo();
         PawnIoVersion = _io.Version;
@@ -111,7 +131,14 @@ public sealed class FanReader : IDisposable
             ec.LoadModule(_lpcIoBlob);
 
             // 端口探测要反复读寄存器, 这段必须持锁。
-            _mutex.Acquire(MutexTimeoutMs);
+            // 探测本身是"在候选端口里试哪一个对", 每次都写端口选择寄存器;
+            // 拿不到锁就是别的软件正在做同样的时序, 这时候硬插进去会把两边的
+            // 时序都打乱 —— 与其猜一个端口, 不如直接说清楚现在不能探测。
+            if (!_mutex.Acquire(MutexTimeoutMs))
+            {
+                throw new EcException(
+                    "EC 正被其它监控软件占用, 无法探测端口。请关掉 HWiNFO / 风扇控制类软件后重试, 或稍后再试。");
+            }
             try { ec.DetectPort(); }
             finally { _mutex.Release(); }
 
@@ -139,7 +166,18 @@ public sealed class FanReader : IDisposable
         {
             // 一把锁只覆盖一次完整采样: 拿不到就等下一轮。
             // 长期持锁会让 HWiNFO / LHM 这类同样守约定的软件彻底读不到 EC。
-            if (_mutex is not null) _mutex.Acquire(MutexTimeoutMs);
+            //
+            // 拿不到锁**不能**硬读: 一次采样由十几条端口写组成, 别人的 I2EC 时序
+            // 正插在中间时读出来的是错值 —— 温度尤其危险, 它会被送进过热看门狗。
+            // 如实报本轮失败, 让上层按"读失败"处理 (连续 N 次才收手)。
+            if (_mutex is not null && !_mutex.Acquire(MutexTimeoutMs))
+            {
+                return new FanSample
+                {
+                    Timestamp = _clock.Now,
+                    Error = "EC 正被其它监控软件占用, 本次采样跳过。",
+                };
+            }
 
             int? temp;
             var fans = new List<FanReading>(2);
@@ -173,14 +211,23 @@ public sealed class FanReader : IDisposable
         }
     }
 
-    /// <summary>只读当前模式 (单独调用时自己拿锁)。</summary>
+    /// <summary>
+    /// 只读当前模式 (单独调用时自己拿锁)。
+    ///
+    /// 拿不到锁返回 Unknown, 而不是在锁外硬读: 这个方法的结果会被拿去决定
+    /// "退出时要不要交还自动", 一个在交错时序下读错的 Mixed/Auto 会让程序
+    /// 误判成"不用收手", 把一个风扇永久留在手动满转上。
+    /// 读不到就说读不到, 上层据此走保守分支。
+    /// </summary>
     public FanModeState ReadModeState()
     {
         if (_ec is null) return FanModeState.Unknown;
 
         try
         {
-            if (_mutex is not null) _mutex.Acquire(MutexTimeoutMs);
+            if (_mutex is not null && !_mutex.Acquire(MutexTimeoutMs))
+                return FanModeState.Unknown;
+
             try { return ReadModeStateLocked(); }
             finally { _mutex?.Release(); }
         }
@@ -219,6 +266,14 @@ public sealed class FanReader : IDisposable
     {
         if (_ec is null)
             return FanModeResult.Failure("设备未打开, 无法切换风扇模式。");
+
+        // 强行继续模式下只读。这条路必须在这里拦住, 而不是靠界面不显示按钮:
+        // 逻辑上"能不能写"是这一层的属性, 上面任何一个调用点漏判都会变成
+        // 往未验证的机器上写寄存器。
+        if (_readOnly)
+            return FanModeResult.Failure(
+                "这台机器的机型/EC 固件没有通过校验, 当前处于只读模式, 不能切换风扇模式。" +
+                "只读模式只保证不会写错寄存器, 显示的转速也可能不准。");
 
         bool locked = false;
         try
@@ -266,9 +321,21 @@ public sealed class FanReader : IDisposable
             //   回滚 —— 把用户刚要的强冷又撤掉, 等于违背指令。
             // 真实的语义是"写完了, 但无法确认现在是什么模式", 确定性恰恰是未知的。
             FanModeState actual;
+            int pwm1;
+            int pwm2;
             try
             {
                 actual = ReadModeStateLocked();
+
+                // 强冷时还要核对"EC 是否真的收下了 184"。
+                //
+                // 只读模式标志是不够的: 标志写成功只能说明 EC 切到了手动模式,
+                // 而手动模式下它采信的是 ManualPwm1/2 里的值 —— 那个值可能是
+                // **上一次残留的** (比如 0 或几十), 于是标志对了、风扇却低速甚至停转,
+                // 程序却报"两个风扇满转"。EC 收下时序但丢弃数值这种静默失败,
+                // 只有回读能发现。
+                pwm1 = mode == FanMode.StrongCool ? _ec.Read(EcRegisters.ManualPwm1) : 0;
+                pwm2 = mode == FanMode.StrongCool ? _ec.Read(EcRegisters.ManualPwm2) : 0;
             }
             catch (Exception readEx)
             {
@@ -282,6 +349,19 @@ public sealed class FanReader : IDisposable
             // 回读到 Mixed 说明两个风扇的标志不一致, 正是"分裂残留"的样子,
             // 属于不确定状态, 要区别于普通的"EC 没接受"。
             bool split = actual == FanModeState.Mixed;
+
+            // 标志对了但 PWM 没进去 —— 风扇可能按上一次残留的占空比在转。
+            // 这是"看着成功、实际没满转"的静默失败, 必须报成不确定: 写入确实生效了一部分
+            // (模式已切手动), 不能简单说"失败"让用户以为风扇还是自动。
+            if (mode == FanMode.StrongCool && actual == FanModeState.StrongCool
+                && (pwm1 != EcRegisters.PwmMax || pwm2 != EcRegisters.PwmMax))
+            {
+                return FanModeResult.Failure(
+                    $"已切到强冷模式, 但手动 PWM 值没有生效 (回读到 Fan1={pwm1} / Fan2={pwm2}, " +
+                    $"应为 {EcRegisters.PwmMax})。" +
+                    "风扇可能按上一次残留的占空比转动, 转速未必是满转 —— 请查看当前转速确认。",
+                    actual, indeterminate: true);
+            }
 
             return mode switch
             {

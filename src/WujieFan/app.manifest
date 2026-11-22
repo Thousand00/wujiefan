@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <!--
+    assemblyIdentity 的 version 是这份清单自身的身份标识, 不是程序版本号,
+    不随 Directory.Build.props 变化。程序版本号只有 Directory.Build.props 一处来源
+    (Version / FileVersion / AssemblyVersion), 请不要在这里手工维护版本。
+  -->
   <assemblyIdentity version="1.0.0.0" name="WujieFan.app" />
 
   <!--

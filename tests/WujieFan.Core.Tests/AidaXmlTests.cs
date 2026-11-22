@@ -58,19 +58,32 @@ public class AidaXmlTests
     }
 
     [Fact]
-    public void BuildXml_无温度时不产生temp节点()
+    public void BuildXml_无温度时temp节点保留但value为空()
     {
         string xml = AidaSharedMemory.BuildXml(TwoFans(temp: null));
 
-        Assert.DoesNotContain("<temp>", xml);
+        // 节点保留、value 留空: 与无效风扇值同一处理。
+        // 整块省略会让 RTSS 继续显示上一次成功读到的温度 —— 温度是过热保护唯一的
+        // 安全信号, 显示过期数字比显示空白危险。
+        Assert.Contains("<temp><id>WUJIE_CPUT</id><label>CPU Temperature</label><value></value></temp>", xml);
         Assert.Equal(2, CountOccurrences(xml, "<fan>"));
     }
 
     [Fact]
     public void BuildXml_空快照返回空串()
     {
+        // 一个风扇都没有、温度也没有: 整帧不发, RTSS 那边当作这帧没更新。
         string xml = AidaSharedMemory.BuildXml(new FanSnapshot());
         Assert.Equal("", xml);
+    }
+
+    [Fact]
+    public void BuildXml_只有温度没有风扇时也发布温度()
+    {
+        string xml = AidaSharedMemory.BuildXml(new FanSnapshot { Temperature = 61 });
+
+        Assert.Equal(0, CountOccurrences(xml, "<fan>"));
+        Assert.Contains("<value>61</value>", xml);
     }
 
     [Fact]

@@ -309,6 +309,17 @@ public sealed class AppSettings
     public bool Save()
     {
         string tmp = FilePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+
+        // 写盘前会顺手修正两个字段 (SchemaVersion / ForceUnsupportedConfirmedAt)。
+        // 先记下原值: 写盘失败时必须还原。
+        //
+        // 不还原会有一个很隐蔽的后果: 对象还是被改过的那个, 调用方看到 false 只提示一句
+        // "保存失败", 但内存里已经是"想要的值"。之后任何一次 Save (改风扇模式、改机型绕过标志、
+        // 托盘操作) 都会把它悄悄落盘 —— 用户以为自己没保存成功, 实际生效了,
+        // 而且 LastError 已被那次成功的 Save 清空, 事后查不到任何线索。
+        int originalSchemaVersion = SchemaVersion;
+        DateTimeOffset? originalConfirmedAt = ForceUnsupportedConfirmedAt;
+
         try
         {
             Directory.CreateDirectory(Dir);
@@ -364,6 +375,12 @@ public sealed class AppSettings
         }
         catch (Exception ex)
         {
+            // 还原写盘前的两个字段: 让内存里的对象和磁盘上的文件保持一致。
+            // 否则调用方看到 false 却拿着一个"已经改过"的对象,
+            // 下一次任意 Save 都会把它落盘, 而 LastError 已被清空。
+            SchemaVersion = originalSchemaVersion;
+            ForceUnsupportedConfirmedAt = originalConfirmedAt;
+
             LastError = ex.Message;
             TryDelete(tmp);
             return false;

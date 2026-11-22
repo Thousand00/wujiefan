@@ -115,6 +115,10 @@ public sealed class AidaSharedMemory : IDisposable
     /// <summary>生成符合解析器约束的 XML。单独暴露以便单元测试。</summary>
     public static string BuildXml(FanSnapshot s)
     {
+        // 完全没有任何数据时整帧不发: RTSS 那边就当作这一帧没有更新。
+        // 只要还有东西要发, 温度节点就按"保留节点 + value 留空"的规则处理 (见下)。
+        if (s.Fans.Count == 0 && s.Temperature is null) return "";
+
         var sb = new StringBuilder(512);
 
         foreach (FanEntry f in s.Fans)
@@ -126,14 +130,18 @@ public sealed class AidaSharedMemory : IDisposable
             sb.Append("</fan>");
         }
 
-        if (s.Temperature is int t)
-        {
-            sb.Append("<temp>");
-            sb.Append("<id>").Append(IdPrefix).Append("CPUT</id>");
-            sb.Append("<label>CPU Temperature</label>");
-            sb.Append("<value>").Append(t).Append("</value>");
-            sb.Append("</temp>");
-        }
+        // 温度未知时也要发这个节点, 只是 value 留空 —— 与无效风扇值的处理一致。
+        //
+        // 原来这里是「温度未知就整块省略」。那样 RTSS 的 overlay 会继续显示上一次
+        // 成功读到的温度, 看起来像当前温度其实早就不是了。而温度正是本程序唯一
+        // 的安全信号 (过热看门狗靠它), 显示一个过期的数字比显示空白危险得多。
+        sb.Append("<temp>");
+        sb.Append("<id>").Append(IdPrefix).Append("CPUT</id>");
+        sb.Append("<label>CPU Temperature</label>");
+        sb.Append("<value>");
+        if (s.Temperature is int t) sb.Append(t);
+        sb.Append("</value>");
+        sb.Append("</temp>");
 
         return sb.ToString();
     }

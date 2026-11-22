@@ -436,6 +436,14 @@ public sealed class MainForm : Form
         // 无论用户最后是按保存还是取消, 关掉弹窗后都会按当前设置重新注册。
         _hotKey.Unregister();
 
+        // 弹窗直接把值写回 _settings 这个共享对象。万一落盘失败, 内存里已经是"新值"了,
+        // 之后任何一次 Save (改风扇模式、托盘操作、退出) 都会把它悄悄落盘 ——
+        // 用户看到的却是"本次修改不会生效"。所以先记下用户能改的那几项, 失败时还原。
+        bool pubBefore = _settings.PublishToRtss;
+        int tempBefore = _settings.EmergencyTemperatureC;
+        int holdBefore = _settings.EmergencyHoldSamples;
+        string hotKeyBefore = _settings.StrongCoolHotKey;
+
         if (!SettingsDialog.Show(this, _settings, state))
         {
             // 取消了: 设置没变, 但热键在打开弹窗时被注销了, 按原样装回去。
@@ -447,12 +455,17 @@ public sealed class MainForm : Form
         // 悄悄失败等于让他以为设置生效了, 下次启动又变回去。
         if (!_settings.Save())
         {
+            _settings.PublishToRtss = pubBefore;
+            _settings.EmergencyTemperatureC = tempBefore;
+            _settings.EmergencyHoldSamples = holdBefore;
+            _settings.StrongCoolHotKey = hotKeyBefore;
+
             SetStatus("设置保存失败, 本次修改不会生效", Theme.Err);
             UiLog("SettingsDialog: 保存失败");
             DarkDialog.Show(this, "设置",
                 "设置写入配置文件失败, 本次修改不会生效。请检查 %LOCALAPPDATA%\\WujieFan 是否可写。",
                 DarkDialog.Tone.Error);
-            // 设置没落盘, 热键按内存里(旧的)值装回去, 别让它就这么一直哑着。
+            // 设置没落盘, 热键按内存里(已还原的)值装回去, 别让它就这么一直哑着。
             ApplyHotKey();
             return;
         }
@@ -566,8 +579,11 @@ public sealed class MainForm : Form
         // 退出前主动交还风扇控制权。冷启动确实会复位 EC, 但"重启" (软复位) 不会 ——
         // 不在退出时收手, 用户点了退出还以为风扇已经回到自动, 实际还在满转。
         // 这一步失败也不阻止退出: 卡在满转只是吵, 而不让用户退出才是真正的问题。
+        //
+        // 判据只排除"确认是自动"这一种情况: Mixed 分裂残留 (一路手动满转、一路已交还)
+        // 同样必须收手, 否则退出后那一路会一直满转下去。
         if (_polling.Reader is { IsOpen: true } reader
-            && reader.ReadModeState() == FanModeState.StrongCool)
+            && reader.ReadModeState() != FanModeState.Auto)
         {
             _mode.RestoreAuto("程序退出");
         }
@@ -621,7 +637,11 @@ public sealed class MainForm : Form
         // 同时把设置里记的模式改回自动:
         // 如果留着强冷, 下次开机会按设置重新拉满, 而用户刚才是关机, 不是要强冷。
         _settings.FanMode = FanMode.Auto;
-        _settings.Save();
+
+        // 关机路径里不能弹框。存不进去的后果是下次开机按设置重新拉满风扇,
+        // 所以这条必须在 ui.log 里留下书面记录, 方便事后解释"为什么开机就满转"。
+        if (!_settings.Save())
+            UiLog("退出时保存模式=自动 失败: " + (AppSettings.LastError ?? "未知原因"));
     }
 
     // ---------------------------------------------------------------- 状态栏

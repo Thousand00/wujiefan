@@ -58,7 +58,7 @@
 [CmdletBinding()]
 param(
     [string]$Configuration = 'Release',
-    [int]$MinTestCount = 218,
+    [int]$MinTestCount = 222,
     [switch]$SkipBuild,
     [switch]$SkipTest,
     [switch]$SkipSmoke,
@@ -222,6 +222,7 @@ if (-not $SkipBuild) {
     }
 } else {
     Write-Head '1/5 构建 —— 已按 -SkipBuild 跳过'
+    Write-SkipMsg '构建：已按 -SkipBuild 跳过，未验证'
 }
 
 # ---- 2. 版本一致性 -------------------------------------------------------
@@ -264,6 +265,7 @@ if (-not $SkipVersion) {
     }
 } else {
     Write-Head '2/5 版本一致性 —— 已按 -SkipVersion 跳过'
+    Write-SkipMsg '版本一致性：已按 -SkipVersion 跳过，未验证'
 }
 
 # ---- 3. 单测 -------------------------------------------------------------
@@ -327,6 +329,10 @@ if (-not $SkipTest) {
         if ($failed -gt 0) {
             Write-Bad "单测失败 $failed 个"
             $failures += "单测失败 $failed 个"
+        } elseif ($skipped -gt 0) {
+            # 有用例被 Skip 掉时, "总数够、失败 0" 不代表这些用例真的验过。
+            # 计为跳过项: 默认退出码 10 (不算通过), -FailOnSkip 下直接判失败。
+            Write-SkipMsg "单测有 $skipped 个用例被 Skip（未实际验证）"
         } elseif ($total -lt $MinTestCount) {
             Write-Bad "用例数 $total 低于下限 $MinTestCount（有用例被意外丢失？）"
             $failures += "用例数 $total < $MinTestCount"
@@ -347,6 +353,7 @@ if (-not $SkipTest) {
     }
 } else {
     Write-Head '3/5 单测 —— 已按 -SkipTest 跳过'
+    Write-SkipMsg '单测：已按 -SkipTest 跳过，未验证'
 }
 
 # ---- 4/5. EcReadSmoke 免管理员回归 --------------------------------------
@@ -380,8 +387,11 @@ if (-not $SkipSmoke) {
                 Write-Ok "autostart-test 通过 $pass / 失败 0"
             }
         } else {
-            # 退出码 0 已代表 fail == 0；文本解析失败只是本地化/编码问题
-            Write-Ok "autostart-test 退出码 0（未解析到汇总行，按退出码判定）"
+            # 退出码 0 只证明"进程没返回非零"，不证明那 6 个用例真的跑过：
+            # 用例被注释掉、程序提前 return 0、输出被重定向吃掉，退出码全是 0。
+            # 解析不到汇总行时按"无法确认"处理，不再当作通过。
+            Write-Bad "autostart-test 退出码 0，但没解析到汇总行，无法确认用例真的跑过"
+            $failures += "autostart-test 未解析到汇总行"
         }
     }
 
@@ -467,6 +477,7 @@ if (-not $SkipSmoke) {
     }
 } else {
     Write-Head '4/5、5/5 EcReadSmoke 回归 —— 已按 -SkipSmoke 跳过'
+    Write-SkipMsg 'EcReadSmoke 回归：已按 -SkipSmoke 跳过，未验证'
 }
 
 # ---- 汇总 ---------------------------------------------------------------

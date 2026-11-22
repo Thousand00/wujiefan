@@ -10,7 +10,7 @@
   WujieFanLauncher.exe 是开机自启动链的第一跳 (普通权限), 由它经 UAC 提权拉起
   WujieFan.exe。两者必须同目录, 少一个自启动就会在 Enable() 时明确报错。
 #>
-param([string]$Version)
+param([string]$Version, [switch]$SkipVerify)
 
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -75,6 +75,25 @@ foreach ($dir in @($fdDir, $scDir, $lsDir)) {
     Write-Host "[0/5] clear stale output: $dir"
     Remove-Item $dir -Recurse -Force
   }
+}
+
+# 打包前先过门禁。以前这个脚本一次都没调过 verify.ps1: 本地随手打出来的包
+# 可能连单测都没跑过, 而 CI 只在 push/PR 时跑, 没有 tag 触发的发布流水线。
+# 于是"发出去的包"和"验证过的代码"之间没有任何强制关系。
+# -SkipVerify 留给"已经验过、只想重新打包"的场景, 用了会显式说明。
+if (-not $SkipVerify) {
+  $verify = Join-Path $root "tools\verify.ps1"
+  if (-not (Test-Path $verify)) {
+    throw "tools\verify.ps1 not found at $verify. Release packages must pass the gate first (or pass -SkipVerify knowingly)."
+  }
+
+  Write-Host "[gate] tools\verify.ps1 -FailOnSkip"
+  & $verify -FailOnSkip
+  if ($LASTEXITCODE -ne 0) {
+    throw "verify.ps1 failed (exit $LASTEXITCODE). Refusing to build a release package from unverified code.$([Environment]::NewLine)Fix the failures, or pass -SkipVerify if you have verified this exact tree by other means."
+  }
+} else {
+  Write-Host "[gate] SKIPPED (-SkipVerify): this package has not been verified by tools\verify.ps1"
 }
 
 Write-Host "[1/5] publish main app (framework-dependent, single-file)"

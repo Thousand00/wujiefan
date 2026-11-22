@@ -21,7 +21,19 @@ public sealed class EcMutex : IDisposable
     };
 
     private readonly List<IntPtr> _handles = new();
-    private readonly List<IntPtr> _owned = new();
+
+    /// <summary>
+    /// 本次已拿到的锁, 连同**拿它的那个线程**。
+    ///
+    /// 必须记线程: Win32 互斥量的归属是线程而不是进程, 只有 Wait 成功的那个线程
+    /// 调 ReleaseMutex 才算数。早先只记句柄, 于是
+    ///   线程 A Acquire → 线程 B Acquire(以为已持有, 跳过 Wait, 直接进临界区)
+    /// B 进临界区时其实没有任何锁保护, 交错时序照样发生; 更糟的是 B 的 Release
+    /// 会失败 (B 不是持有者), 而旧代码失败后仍把句柄从 _owned 拿走, 那把锁
+    /// 自此再也没人还, HWiNFO / LHM 读不到 EC。
+    /// </summary>
+    private readonly List<(IntPtr Handle, int ThreadId)> _owned = new();
+
     private bool _disposed;
 
     /// <summary>当前是否持有锁 (可能只拿到其中一部分)。</summary>
@@ -64,14 +76,15 @@ public sealed class EcMutex : IDisposable
 
         foreach (IntPtr h in _handles)
         {
-            // 已持有的不重复 Wait: 同一线程对同一互斥量再次 Wait 是重入计数,
+            // 已由**本线程**持有的不重复 Wait: 同一线程对同一互斥量再次 Wait 是重入计数,
             // 而 Release 只调一次就会留下一个计数没还, 那把锁之后就永远归本进程了。
-            if (_owned.Contains(h)) continue;
+            // 换成别的线程时不能跳过 —— 那把锁的归属是原来那个线程, 本线程进去等于没锁。
+            if (IsOwnedByCurrentThread(h)) continue;
 
             uint wait = WaitForSingleObject(h, (uint)timeoutMs);
             if (wait is 0 or 0x80)   // WAIT_OBJECT_0 / WAIT_ABANDONED
             {
-                _owned.Add(h);
+                _owned.Add((h, Environment.CurrentManagedThreadId));
                 continue;
             }
 
@@ -83,14 +96,44 @@ public sealed class EcMutex : IDisposable
         return true;
     }
 
+    /// <summary>这把锁是不是当前线程拿的。</summary>
+    private bool IsOwnedByCurrentThread(IntPtr h)
+    {
+        int me = Environment.CurrentManagedThreadId;
+        foreach (var (handle, threadId) in _owned)
+            if (handle == h && threadId == me) return true;
+        return false;
+    }
+
     /// <summary>释放本次 Acquire 拿到的锁。可以安全地重复调用。</summary>
     public void Release()
     {
-        foreach (IntPtr h in _owned)
+        int me = Environment.CurrentManagedThreadId;
+        var keep = new List<(IntPtr Handle, int ThreadId)>();
+
+        foreach (var (h, threadId) in _owned)
         {
-            try { ReleaseMutex(h); } catch { }
+            // 不是自己的锁不能在这里还: ReleaseMutex 会失败, 而失败恰好说明
+            // "这把锁还归别的线程", 记录必须留着等它自己 Release。
+            // 旧代码无条件 Clear, 于是那个线程再也没有机会还锁, 锁就锁死了。
+            if (threadId != me)
+            {
+                keep.Add((h, threadId));
+                continue;
+            }
+
+            try
+            {
+                if (!ReleaseMutex(h)) keep.Add((h, threadId));
+            }
+            catch
+            {
+                keep.Add((h, threadId));
+            }
         }
+
         _owned.Clear();
+        _owned.AddRange(keep);
     }
 
     public void Dispose()

@@ -59,17 +59,17 @@ public sealed class AutoStartManager
 
     public sealed record Result(bool Ok, string Message);
 
-    /// <summary>查询当前状态。任务不存在返回 false。</summary>
+    /// <summary>查询当前状态。任务不存在返回 false; 查不到也返回 false (宁可报未开启)。</summary>
     public bool IsEnabled()
     {
-        var (exists, command) = QueryTask();
+        var (exists, command, _) = QueryTask();
         return exists && IsOurCommand(command);
     }
 
     /// <summary>同名任务存在但不属于本程序。此时任何自动操作都应当停下。</summary>
     public bool HasForeignTask()
     {
-        var (exists, command) = QueryTask();
+        var (exists, command, _) = QueryTask();
         return exists && !IsOurCommand(command);
     }
 
@@ -87,7 +87,7 @@ public sealed class AutoStartManager
     /// </summary>
     public bool IsUpToDate()
     {
-        var (exists, command) = QueryTask();
+        var (exists, command, _) = QueryTask();
         if (!exists) return false;
 
         string xml = QueryTaskXml();
@@ -146,7 +146,14 @@ public sealed class AutoStartManager
                 "缺少启动器文件:\n" + launcher + "\n" +
                 "它必须和 WujieFan.exe 放在同一个目录。请重新解压完整的发布包。");
 
-        var (exists, command) = QueryTask();
+        var (exists, command, inconclusive) = QueryTask();
+
+        // 查不到任务状态时不能猜"反正是新建"就往下走, 也不能报"已启用"。
+        // 往下走会覆盖一个可能存在的别人的任务; 报成功则是在撒谎。
+        if (inconclusive)
+            return new Result(false,
+                "无法查询计划任务状态 (schtasks 超时或无响应), 因此没有修改开机自启动。\n" +
+                "请稍后重试, 或到「任务计划程序」里手动确认。");
 
         if (exists && !IsOurCommand(command))
             return new Result(false,
@@ -203,7 +210,14 @@ public sealed class AutoStartManager
     /// <summary>删除计划任务。仅当它属于本程序时才删。</summary>
     public Result Disable()
     {
-        var (exists, command) = QueryTask();
+        var (exists, command, inconclusive) = QueryTask();
+
+        // 查不到 ≠ 没有。这里如果按"没有任务"处理并返回成功, 用户会得到一个
+        // "已关闭开机自启动"的假消息, 而任务其实还在, 下次开机照旧启动。
+        if (inconclusive)
+            return new Result(false,
+                "无法查询计划任务状态 (schtasks 超时或无响应), 因此没有改动开机自启动。\n" +
+                "它可能仍然是开启的, 请稍后重试或到「任务计划程序」里确认。");
 
         if (!exists)
             return new Result(true, "已关闭 (本来就没有自启动项)。");
@@ -342,22 +356,47 @@ public sealed class AutoStartManager
             return Encoding.UTF8;
         }
     }
-    /// <summary>读计划任务的完整 XML。任务不存在时返回空串。</summary>
-    private string QueryTaskXml()
+    /// <summary>读计划任务的完整 XML。查不到 (任务不存在 / schtasks 失败) 都返回空串。</summary>
+    private string QueryTaskXml() => QueryTaskXml(out _);
+
+    /// <summary>
+    /// 读计划任务的完整 XML, 并区分"确实没有这个任务"和"根本没查成"。
+    ///
+    /// 这两者必须分开: schtasks 超时、被权限挡住、输出编码异常时也会拿不到 XML,
+    /// 若一律当成"没有任务", 界面就会显示"未开启"、Disable() 会返回
+    /// "已关闭 (本来就没有自启动项)" —— 用户以为关掉了, 实际上任务还在, 下次开机照旧。
+    /// </summary>
+    private string QueryTaskXml(out bool inconclusive)
     {
         var r = Run("schtasks.exe", $"/Query /TN \"{_taskName}\" /XML");
-        return r.Exit == 0 ? r.Output : "";
+
+        if (r.Exit == 0)
+        {
+            inconclusive = false;
+            return r.Output;
+        }
+
+        // schtasks 对"任务不存在"返回 1 并输出「ERROR: 系统找不到指定的文件」一类的信息。
+        // 超时 (-1) 与我们自己起进程失败 (-1) 则属于"没查成"。
+        inconclusive = r.Exit == -1;
+        return "";
     }
 
-    /// <summary>读计划任务的命令行。任务不存在时 exists 为 false。</summary>
-    private (bool Exists, string Command) QueryTask()
+    /// <summary>
+    /// 读计划任务的命令行。
+    ///
+    /// Exists=false 且 Inconclusive=false: 确实没有这个任务。
+    /// Exists=false 且 Inconclusive=true: 没查成 (schtasks 超时/起不来), 状态未知 ——
+    /// 调用方绝不能把它当成"没有任务"去报告成功。
+    /// </summary>
+    private (bool Exists, string Command, bool Inconclusive) QueryTask()
     {
-        string xml = QueryTaskXml();
-        if (xml.Length == 0) return (false, "");
+        string xml = QueryTaskXml(out bool inconclusive);
+        if (xml.Length == 0) return (false, "", inconclusive);
 
         Match m = Regex.Match(xml, @"<Command>(.*?)</Command>", RegexOptions.Singleline);
         string command = m.Success ? m.Groups[1].Value.Trim() : "";
-        return (true, command);
+        return (true, command, false);
     }
 
     /// <summary>
