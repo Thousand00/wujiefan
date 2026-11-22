@@ -79,6 +79,12 @@ internal sealed class TrayHost : IDisposable
         _form.ShowInTaskbar = true;
         if (!_form.Visible) _form.Show();
         _form.WindowState = FormWindowState.Normal;
+
+        // 上面几行都可能重建窗口句柄 (改 ShowInTaskbar / Show 都会), 新句柄上既没有
+        // DWM 原生圆角, 窗口 Region 也可能是最小化期间留下的占位尺寸。让窗体自己
+        // 重新走一遍布局与裁剪 —— 否则就会出现"只剩左上角一条可见"的透明窗口。
+        if (_form is MainForm main) main.RefreshChrome();
+
         _form.Activate();
         _form.BringToFront();
     }

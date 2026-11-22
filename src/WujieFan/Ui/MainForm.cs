@@ -204,17 +204,40 @@ public sealed class MainForm : Form
         // 标题栏右侧两个按钮
         _chrome.Layout(w);
 
-        UpdateRegion();
+        // 用刚刚算出来的目标尺寸, 而不是 Width/Height。窗口最小化 (含收进托盘) 时
+        // Width/Height 是系统给的占位矩形 (实测 237x39), 拿它裁 Region 会把这个小矩形
+        // 写进窗口, 恢复后整块窗体只剩左上角一条可见。状态栏每秒都在 SetStatus →
+        // Relayout → 这里, 只要有一拍赶上最小化就会中招, 所以症状时有时无、重启才好。
+        UpdateRegion(w, y);
     }
 
     /// <summary>无边框窗口要自己把圆角裁出来, 否则四个角是直角深色块。</summary>
-    private void UpdateRegion()
+    private void UpdateRegion(int width, int height)
     {
-        if (Width <= 0 || Height <= 0) return;
+        if (_disposedUi || IsDisposed || !IsHandleCreated) return;
+        if (width <= 0 || height <= 0) return;
 
-        using var path = Round.Path(new RectangleF(0, 0, Width, Height), Dpi.PxF(this, 12));
+        using var path = Round.Path(new RectangleF(0, 0, width, height), Dpi.PxF(this, 12));
         Region?.Dispose();
         Region = new Region(path);
+    }
+
+    /// <summary>
+    /// 不知道目标尺寸时用这个重载。最小化期间 ClientSize 会变成 0x0、Width/Height 变成
+    /// 系统占位矩形, 从最小化切回 Normal 的那一瞬间窗口尺寸也可能还没更新, 所以取
+    /// ClientSize 与 RestoreBounds 里较大的那个: 稳定状态下两者相等, 过渡期较小的那个
+    /// 一定是过时值。
+    /// </summary>
+    private void UpdateRegion()
+    {
+        if (_disposedUi || IsDisposed || !IsHandleCreated) return;
+
+        Size client = ClientSize;
+        Size restore = RestoreBounds.Size;
+        int width = Math.Max(client.Width, restore.Width);
+        int height = Math.Max(client.Height, restore.Height);
+
+        UpdateRegion(width, height);
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -223,6 +246,21 @@ public sealed class MainForm : Form
 
         // Win11 的原生圆角 + 阴影, 拿不到就靠上面的 Region 兜底。
         TitleBarChrome.ApplyRoundedCorners(Handle);
+    }
+
+    /// <summary>
+    /// 句柄重建后把窗口外观重新套一遍: 原生圆角是绑在句柄上的, 改 ShowInTaskbar
+    /// 或 Hide/Show 都会换一个新句柄, 新句柄默认没有圆角; 顺便按当前真实尺寸重算一次
+    /// Region, 免得显示出来的是最小化期间算的那个尺寸。
+    /// </summary>
+    internal void RefreshChrome()
+    {
+        if (_disposedUi || IsDisposed) return;
+
+        if (IsHandleCreated) TitleBarChrome.ApplyRoundedCorners(Handle);
+
+        Relayout();
+        Invalidate();
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -568,7 +606,16 @@ public sealed class MainForm : Form
     {
         // Relayout 会改 ClientSize, 也会触发 Resize, 但那不是"用户最小化了窗口"。
         if (WindowState == FormWindowState.Minimized && _settings.MinimizeToTray && !_exiting)
+        {
             PostToUi(HideToTray);
+            return;
+        }
+
+        // 从最小化/隐藏恢复时再按真实尺寸裁一次圆角。Relayout 只在 SetStatus 时跑,
+        // 恢复本身不一定触发它, 所以这里补一刀; 尺寸取 ClientSize 与 RestoreBounds
+        // 的较大者, 过渡期的过时值不会把小矩形写进 Region。
+        if (WindowState == FormWindowState.Normal && !_disposedUi && !IsDisposed)
+            UpdateRegion();
     }
 
     /// <summary>把隐藏的窗口叫回来 (托盘双击、托盘菜单、以及第二次启动的唤醒事件都走这里)。</summary>
