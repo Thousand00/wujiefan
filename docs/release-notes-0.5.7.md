@@ -45,8 +45,8 @@
 
 | 文件 | 大小 | SHA-256 |
 | --- | --- | --- |
-| `WujieFan-0.5.7-win-x64.zip` | 待填 | 待填 |
-| `WujieFan-0.5.7-win-x64-portable.zip` | 待填 | 待填 |
+| `WujieFan-0.5.7-win-x64.zip` | 260,493 B | `6dc3eae205713d114b5a27ae0c40df836fa3901dd5e74d7649883666608afcf6` |
+| `WujieFan-0.5.7-win-x64-portable.zip` | 98,315,890 B | `b57c3900314fab26a3a775d6449501329ed9b78f4b4d9bc3f940776bbc66e7bc` |
 
 ## 已知问题
 
