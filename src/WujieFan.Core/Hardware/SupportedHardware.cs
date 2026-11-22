@@ -106,9 +106,6 @@ public static class SupportedHardware
     private static bool Contains(string haystack, string needle) =>
         haystack.Contains(needle, StringComparison.OrdinalIgnoreCase);
 
-    private static bool AnyContains(string haystack, IEnumerable<string> needles) =>
-        needles.Any(n => Contains(haystack, n));
-
     /// <summary>
     /// 归一化后精确相等: 折叠连续空白、去掉首尾空白、忽略大小写。
     ///

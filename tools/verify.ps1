@@ -22,7 +22,7 @@
     构建配置，默认 Release。
 
 .PARAMETER MinTestCount
-    单测用例数下限，默认 218（全局快捷键的键位模型与配置归一化补充 40 条后的基线）。
+    单测用例数下限，默认 246（热键往返、EcMutex 归属与重入、AIDA 空帧语义补齐后的基线）。
     只做下界断言，用例增多不会误报；真正的门禁是失败数 = 0。
 
 .PARAMETER SkipBuild
@@ -58,7 +58,7 @@
 [CmdletBinding()]
 param(
     [string]$Configuration = 'Release',
-    [int]$MinTestCount = 222,
+    [int]$MinTestCount = 246,
     [switch]$SkipBuild,
     [switch]$SkipTest,
     [switch]$SkipSmoke,

@@ -26,6 +26,12 @@ internal sealed class TrayHost : IDisposable
     private bool _hintShown;
     private bool _hiding;
 
+    /// <summary>
+    /// 本次会话的托盘图标没建出来。只存在内存里 —— 这是环境问题 (explorer 还没起、
+    /// 通知区域被占), 下次启动大概率就好, 不该替用户永久改掉 MinimizeToTray。
+    /// </summary>
+    private bool _fallbackNoTray;
+
     public TrayHost(
         Form form,
         AppSettings settings,
@@ -64,14 +70,26 @@ internal sealed class TrayHost : IDisposable
         {
             UiLog("CreateTrayIcon FAILED: " + ex);
             // 托盘建不出来时至少要把窗口留住, 否则关掉窗口就再也找不回来了。
-            // 这里必须落盘: 只改内存的话下次启动又会按 MinimizeToTray=true 尝试缩托盘,
-            // 而托盘建不出来是环境问题 (explorer 没起来、图标资源损坏), 大概率还会失败。
-            _settings.MinimizeToTray = false;
-            _saveSettingsQuietly("关闭托盘回退选项");
+            //
+            // 但**不要落盘改用户的偏好**: 托盘建不出来几乎总是一次性的环境问题
+            // (explorer 还没起来、通知区域被别的程序占满), 下次启动大概率就好了。
+            // 一次失败就把 MinimizeToTray 永久改成 false, 等于替用户做了个他
+            // 从来没做过的选择, 而且他再也看不到那个开关被关掉的原因。
+            // 本次会话降级为"关窗即退出"就够了: Available 会返回 false,
+            // MainForm.OnFormClosing 据此直接退出, 不再尝试藏进不存在的托盘。
+            _fallbackNoTray = true;
             _icon = null;
-            _setStatus("托盘图标创建失败, 已改为关窗口即退出: " + ex.Message, Theme.Warn);
+            _setStatus("托盘图标创建失败, 本次改为关窗口即退出: " + ex.Message, Theme.Warn);
         }
     }
+
+    /// <summary>
+    /// 本次会话没有托盘可用 (创建失败)。只活在内存里, 不写进设置。
+    ///
+    /// 与 <see cref="Available"/> 的区别: 后者问"现在有没有图标对象",
+    /// 这里问"是不是曾经失败过", 用来在状态栏文案里说清这一次为什么不一样。
+    /// </summary>
+    public bool Unavailable => _fallbackNoTray;
 
     /// <summary>把隐藏的窗口叫回来 (托盘双击、托盘菜单、以及第二次启动的唤醒事件都走这里)。</summary>
     public void Restore()
@@ -215,8 +233,21 @@ internal sealed class TrayHost : IDisposable
         }
 
         // 兜底: 没有嵌入资源就用 exe 自己的图标; 连这个都拿不到就用系统图标。
-        try { return Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application; }
-        catch { return SystemIcons.Application; }
+        //
+        // 系统图标必须 Clone 一份再交出去: SystemIcons.Application 是进程内共享的
+        // 静态实例, 上面 Dispose() 会无条件释放拿到的 Icon —— 直接返回它就会把
+        // 一个属于 .NET 的共享句柄销毁掉, 之后再要用系统图标的地方就会拿到失效句柄。
+        try
+        {
+            Icon? extracted = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            if (extracted is not null) return extracted;
+        }
+        catch
+        {
+            // 拿不到 exe 图标不是什么大事, 落到下面的系统图标。
+        }
+
+        return (Icon)SystemIcons.Application.Clone();
     }
 
     public void Dispose()

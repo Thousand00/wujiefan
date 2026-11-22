@@ -256,6 +256,14 @@ internal sealed class FanPollingController
             // 是最需要兜底的那一种状态, 而不是可以跳过监控的状态。
             _mode()?.CheckReadError();
 
+            // 界面与覆盖层都清成"无数据"。原来这里只 return, 三张卡片和 RTSS 覆盖层
+            // 会一直停在最后一次成功读到的值 —— 看起来一切正常, 实际上什么都没读到。
+            // 这种"静默陈旧"比显示空白危险: 用户会照着假温度判断散热是否正常。
+            _fan1Card.Value = "--";
+            _fan2Card.Value = "--";
+            _tempCard.Value = "--";
+            _publisher.PublishUnavailable();
+
             if (_consecutiveErrors >= 5)
             {
                 // 连续失败多半是句柄失效, 重连一次。

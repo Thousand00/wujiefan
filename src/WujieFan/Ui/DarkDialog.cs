@@ -88,6 +88,16 @@ internal sealed class DarkDialogForm : Form
         LayoutDialog();
     }
 
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+
+        // 这类对话框只在有 DPI 变化的会话里短暂出现, 但一旦漏了重排,
+        // 正文会按旧比例撑出圆角框, 看起来像渲染坏了。
+        LayoutDialog();
+        Invalidate(true);
+    }
+
     private void LayoutDialog()
     {
         int padX = Dpi.Px(this, 22);

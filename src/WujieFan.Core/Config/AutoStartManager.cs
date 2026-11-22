@@ -59,6 +59,36 @@ public sealed class AutoStartManager
 
     public sealed record Result(bool Ok, string Message);
 
+    /// <summary>
+    /// 计划任务的四种状态。
+    ///
+    /// 三态之所以必须保留, 是因为 <see cref="IsEnabled"/> 把"查不到"和"没有任务"
+    /// 压成了同一个 false。界面上看都是"未开启", 但决策路径上两者完全不同:
+    /// "没有任务"可以放心什么都不做, "查不到"却意味着**不能据此下任何结论** ——
+    /// 若把它当成未开启, 用户什么都没动、第二次查询却成功返回"其实是开着的",
+    /// 就会判定"需要关闭"并把用户正常的自启动任务删掉。
+    /// </summary>
+    public enum TaskState
+    {
+        /// <summary>没查成 (schtasks 超时/起不来)。任何结论都不能基于这个状态。</summary>
+        Unknown,
+        /// <summary>确实没有这个任务。</summary>
+        Absent,
+        /// <summary>任务存在且属于本程序。</summary>
+        Ours,
+        /// <summary>任务存在但不属于本程序 (同名冲突)。</summary>
+        Foreign,
+    }
+
+    /// <summary>只查一次, 把四种状态一次说清。需要同时判断存在性/归属的调用方用它。</summary>
+    public TaskState QueryState()
+    {
+        var (exists, command, inconclusive) = QueryTask();
+        if (inconclusive) return TaskState.Unknown;
+        if (!exists) return TaskState.Absent;
+        return IsOurCommand(command) ? TaskState.Ours : TaskState.Foreign;
+    }
+
     /// <summary>查询当前状态。任务不存在返回 false; 查不到也返回 false (宁可报未开启)。</summary>
     public bool IsEnabled()
     {
@@ -302,12 +332,24 @@ public sealed class AutoStartManager
             """;
     }
 
-    /// <summary>把子进程的原始字节全部读出来 (不改动流上的编码设置)。</summary>
-    private static byte[] ReadAllBytes(Stream s)
+    /// <summary>
+    /// 等一个读流任务结束, 最多等 <paramref name="timeoutMs"/>。
+    ///
+    /// 进程已经退出却仍有读取任务没结束, 说明那条流的句柄被什么东西拽住了。
+    /// 这时不能无限等, 也不能让异常冒到调用方: 返回已经读到的部分 (通常是空),
+    /// 让上层按"输出不全"处理, 至少不会把 UI 线程焊死在这里。
+    /// </summary>
+    private static byte[] ReadWithTimeout(Task<byte[]> task, int timeoutMs)
     {
-        using var ms = new MemoryStream();
-        s.CopyTo(ms);
-        return ms.ToArray();
+        try
+        {
+            if (!task.Wait(timeoutMs)) return Array.Empty<byte>();
+            return task.Result;
+        }
+        catch
+        {
+            return Array.Empty<byte>();
+        }
     }
 
     private static async Task<byte[]> ReadAllBytesAsync(Stream s)
@@ -395,7 +437,13 @@ public sealed class AutoStartManager
         if (xml.Length == 0) return (false, "", inconclusive);
 
         Match m = Regex.Match(xml, @"<Command>(.*?)</Command>", RegexOptions.Singleline);
-        string command = m.Success ? m.Groups[1].Value.Trim() : "";
+
+        // XML 里的 & 是 &amp;。路径里带 & (例如 "C:\Tools\A & B\") 时, 直接拿原文
+        // 去 SamePath 比对永远不等, 自家任务就会被判成"外来任务", 于是自启动被锁死、
+        // 既关不掉也升级不了。这里把实体解回来, 让比对面对的是真实路径。
+        string command = m.Success
+            ? System.Net.WebUtility.HtmlDecode(m.Groups[1].Value).Trim()
+            : "";
         return (true, command, false);
     }
 
@@ -480,16 +528,24 @@ public sealed class AutoStartManager
             // 这里按字节读而不是让 .NET 自动解码: schtasks 的输出编码跟着控制台代码页走,
             // 实测同一台机器上时而是 UTF-8 时而是 GBK, 固定按任何一种解都会出错。
             // 拿到原始字节后再自己判断编码 (见 DecodeText)。
+            //
+            // 两条流都必须异步读、并且整体套一个超时: 同步 CopyTo 会一直读到 EOF,
+            // 若子进程卡住且不关闭 stdout, 它永远不返回, 下面的 WaitForExit(15000)
+            // 根本没机会执行 —— 超时形同虚设, 调用方 (UI 线程) 会无限卡住。
+            Task<byte[]> outTask = ReadAllBytesAsync(p.StandardOutput.BaseStream);
             Task<byte[]> errTask = ReadAllBytesAsync(p.StandardError.BaseStream);
-            byte[] outBytes = ReadAllBytes(p.StandardOutput.BaseStream);
-            byte[] errBytes = errTask.GetAwaiter().GetResult();
 
-            if (!p.WaitForExit(15000))
+            bool exited = p.WaitForExit(15000);
+            if (!exited)
             {
                 // 超时的 schtasks 不能就这么放着, 它会一直占着一个进程句柄。
+                // Kill 会让两条流的读取任务收到 EOF 而结束, 不必再等它们。
                 try { p.Kill(entireProcessTree: true); } catch { }
                 return (-1, "schtasks 超时未返回, 已终止。");
             }
+
+            byte[] outBytes = ReadWithTimeout(outTask, 2000);
+            byte[] errBytes = ReadWithTimeout(errTask, 2000);
 
             string all = (DecodeText(outBytes) + "\n" + DecodeText(errBytes)).Trim();
             return (p.ExitCode, all);

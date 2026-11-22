@@ -50,7 +50,13 @@ public class FanSampleTests
         var (rpm, note) = FanSample.ConvertRpm(count);
 
         Assert.Equal(9999, rpm);
-        Assert.Equal("超量程(>16700RPM)", note);
+
+        // 期望值由常数算出, 不是抄一个数字: 最小的合法 count 是 0x80=128,
+        // 对应 2156250/128=16845 RPM。这样一旦有人改了 TachConstant 而忘了同步文案,
+        // 这条断言立刻会红。
+        int maxRpm = EcRegisters.TachConstant / 0x80;
+        Assert.Equal(16845, maxRpm);
+        Assert.Equal($"超量程(>{maxRpm}RPM)", note);
     }
 
     [Theory]

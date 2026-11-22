@@ -349,18 +349,23 @@ internal static class Program
             }
         }
 
+        // 先看 problems: 大小不符/缺失/清单缺记录都算"比对过并且不对"。
+        // 这个顺序有讲究 —— 大小不符的文件没有计入 compared, 所以若先把
+        // compared == 0 判成"没有交集", 一个"整包文件大小全对不上"的情况就会被
+        // 报成"清单损坏", 把用户引向错误的方向。两种结论的安全效果一样(都不放行),
+        // 但给的原因必须是真的。
+        if (problems.Count > 0)
+        {
+            detail = string.Join("\r\n", problems);
+            return Integrity.Mismatch;
+        }
+
         if (compared == 0)
         {
             // 一个文件都没有真正比对过 (清单与磁盘没有交集), 不能报"已校验",
             // 也不该报成"内容不符"——那是另一回事, 会误导用户去查篡改。
             detail = "清单与磁盘上的文件没有交集, 无法校验。";
             return Integrity.PinsInvalid;
-        }
-
-        if (problems.Count > 0)
-        {
-            detail = string.Join("\r\n", problems);
-            return Integrity.Mismatch;
         }
 
         detail = compared + " 个文件已校验";

@@ -20,10 +20,27 @@ public sealed class EcMutex : IDisposable
         @"Global\Access_EC",
     };
 
+    /// <summary>
+    /// 实际使用的锁名。默认是上面那两个业界约定的名字; 测试传入自己的名字,
+    /// 以免测试进程与真实的 HWiNFO / LHM / 正在运行的 WujieFan 抢同一把锁 ——
+    /// 一条断言失败就顺手把 EC 访问锁死, 是测试最不该付出的代价。
+    /// </summary>
+    private readonly string[] _names;
+
     private readonly List<IntPtr> _handles = new();
 
+    /// <summary>用默认的业界约定名。</summary>
+    public EcMutex() : this(Names) { }
+
+    /// <summary>用指定的锁名 (供测试隔离)。</summary>
+    public EcMutex(IReadOnlyList<string> names)
+    {
+        if (names.Count == 0) throw new ArgumentException("至少要给一个锁名。", nameof(names));
+        _names = names.ToArray();
+    }
+
     /// <summary>
-    /// 本次已拿到的锁, 连同**拿它的那个线程**。
+    /// 本次已拿到的锁, 连同**拿它的那个线程**与**重入深度**。
     ///
     /// 必须记线程: Win32 互斥量的归属是线程而不是进程, 只有 Wait 成功的那个线程
     /// 调 ReleaseMutex 才算数。早先只记句柄, 于是
@@ -31,26 +48,43 @@ public sealed class EcMutex : IDisposable
     /// B 进临界区时其实没有任何锁保护, 交错时序照样发生; 更糟的是 B 的 Release
     /// 会失败 (B 不是持有者), 而旧代码失败后仍把句柄从 _owned 拿走, 那把锁
     /// 自此再也没人还, HWiNFO / LHM 读不到 EC。
+    ///
+    /// 必须记深度: 同一线程重入时我们没有再 Wait (Win32 的 Wait 是重入计数, 而
+    /// Release 只调一次会留下一个计数永不归还), 于是内层 Release 会把外层的锁
+    /// 直接还掉 —— 外层还以为自己在临界区里, 实际上已经被别人进来了。
+    /// 当前调用图没有嵌套, 但这属于公开类型的契约, 不能靠"现在没人这么用"维系。
     /// </summary>
-    private readonly List<(IntPtr Handle, int ThreadId)> _owned = new();
+    private readonly List<OwnedLock> _owned = new();
+
+    /// <summary>一把归属于某线程的锁, 以及本线程重入了几层。</summary>
+    private sealed class OwnedLock
+    {
+        public OwnedLock(IntPtr handle, int threadId)
+        {
+            Handle = handle;
+            ThreadId = threadId;
+            Depth = 1;
+        }
+
+        public IntPtr Handle { get; }
+        public int ThreadId { get; }
+        public int Depth { get; set; }
+    }
 
     private bool _disposed;
-
-    /// <summary>当前是否持有锁 (可能只拿到其中一部分)。</summary>
-    public bool IsHeld => _owned.Count > 0;
 
     /// <summary>互斥量句柄只创建一次, 之后反复 Acquire/Release 复用。</summary>
     private bool EnsureHandles()
     {
         // 从已建好的数量续建: 中途失败时不能从头再来, 否则同一把锁会拿到两个句柄。
-        for (int i = _handles.Count; i < Names.Length; i++)
+        for (int i = _handles.Count; i < _names.Length; i++)
         {
-            IntPtr h = CreateMutex(IntPtr.Zero, false, Names[i]);
+            IntPtr h = CreateMutex(IntPtr.Zero, false, _names[i]);
             if (h == IntPtr.Zero) return false;
             _handles.Add(h);
         }
 
-        return _handles.Count == Names.Length;
+        return _handles.Count == _names.Length;
     }
 
     /// <summary>
@@ -74,66 +108,109 @@ public sealed class EcMutex : IDisposable
 
         if (!EnsureHandles()) return false;
 
+        // 记下进来时每把锁的深度。失败回滚只撤销**本次调用新增**的那些,
+        // 不能像旧实现那样 Release() 一把全还 —— 那会把外层的持有也一并还掉。
+        int[] depthBefore = new int[_handles.Count];
+        for (int i = 0; i < _handles.Count; i++)
+            depthBefore[i] = DepthOf(_handles[i]);
+
         foreach (IntPtr h in _handles)
         {
             // 已由**本线程**持有的不重复 Wait: 同一线程对同一互斥量再次 Wait 是重入计数,
             // 而 Release 只调一次就会留下一个计数没还, 那把锁之后就永远归本进程了。
             // 换成别的线程时不能跳过 —— 那把锁的归属是原来那个线程, 本线程进去等于没锁。
-            if (IsOwnedByCurrentThread(h)) continue;
+            OwnedLock? mine = OwnedByCurrentThread(h);
+            if (mine is not null)
+            {
+                mine.Depth++;
+                continue;
+            }
 
             uint wait = WaitForSingleObject(h, (uint)timeoutMs);
             if (wait is 0 or 0x80)   // WAIT_OBJECT_0 / WAIT_ABANDONED
             {
-                _owned.Add((h, Environment.CurrentManagedThreadId));
+                _owned.Add(new OwnedLock(h, Environment.CurrentManagedThreadId));
                 continue;
             }
 
             // 拿不全就一把都不留, 避免"半持有"这种既锁不住别人、又占着锁的状态。
-            Release();
+            RollbackTo(depthBefore);
             return false;
         }
 
         return true;
     }
 
-    /// <summary>这把锁是不是当前线程拿的。</summary>
-    private bool IsOwnedByCurrentThread(IntPtr h)
+    /// <summary>本线程在这把锁上的重入深度, 没持有则为 0。</summary>
+    private int DepthOf(IntPtr h)
     {
         int me = Environment.CurrentManagedThreadId;
-        foreach (var (handle, threadId) in _owned)
-            if (handle == h && threadId == me) return true;
-        return false;
+        foreach (OwnedLock owned in _owned)
+            if (owned.Handle == h && owned.ThreadId == me) return owned.Depth;
+        return 0;
+    }
+
+    /// <summary>把本线程在各把锁上的深度退回到 <paramref name="depthBefore"/> 记录的值。</summary>
+    private void RollbackTo(int[] depthBefore)
+    {
+        for (int i = 0; i < _handles.Count && i < depthBefore.Length; i++)
+        {
+            IntPtr h = _handles[i];
+            while (true)
+            {
+                OwnedLock? mine = OwnedByCurrentThread(h);
+                if (mine is null || mine.Depth <= depthBefore[i]) break;
+                if (!ReleaseOne(mine)) break;
+            }
+        }
+    }
+
+    /// <summary>这把锁是不是当前线程拿的; 是则返回记录, 否则 null。</summary>
+    private OwnedLock? OwnedByCurrentThread(IntPtr h)
+    {
+        int me = Environment.CurrentManagedThreadId;
+        foreach (OwnedLock owned in _owned)
+            if (owned.Handle == h && owned.ThreadId == me) return owned;
+        return null;
+    }
+
+    /// <summary>把本线程的持有深度减一; 深度归零才真正 ReleaseMutex。成功返回 true。</summary>
+    private bool ReleaseOne(OwnedLock owned)
+    {
+        if (owned.Depth > 1)
+        {
+            owned.Depth--;
+            return true;
+        }
+
+        try
+        {
+            if (!ReleaseMutex(owned.Handle)) return false;
+        }
+        catch
+        {
+            return false;
+        }
+
+        _owned.Remove(owned);
+        return true;
     }
 
     /// <summary>释放本次 Acquire 拿到的锁。可以安全地重复调用。</summary>
     public void Release()
     {
         int me = Environment.CurrentManagedThreadId;
-        var keep = new List<(IntPtr Handle, int ThreadId)>();
 
-        foreach (var (h, threadId) in _owned)
+        // 复制一份再遍历: ReleaseOne 会从 _owned 里移除自己。
+        foreach (OwnedLock owned in _owned.ToArray())
         {
             // 不是自己的锁不能在这里还: ReleaseMutex 会失败, 而失败恰好说明
             // "这把锁还归别的线程", 记录必须留着等它自己 Release。
             // 旧代码无条件 Clear, 于是那个线程再也没有机会还锁, 锁就锁死了。
-            if (threadId != me)
-            {
-                keep.Add((h, threadId));
-                continue;
-            }
+            if (owned.ThreadId != me) continue;
 
-            try
-            {
-                if (!ReleaseMutex(h)) keep.Add((h, threadId));
-            }
-            catch
-            {
-                keep.Add((h, threadId));
-            }
+            ReleaseOne(owned);
         }
-
-        _owned.Clear();
-        _owned.AddRange(keep);
     }
 
     public void Dispose()

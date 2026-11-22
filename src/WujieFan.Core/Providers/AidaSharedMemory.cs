@@ -39,10 +39,28 @@ public sealed class AidaSharedMemory : IDisposable
 
     public const int MappingSize = 64 * 1024;
 
+    /// <summary>
+    /// 实际使用的映射名。默认是 RTSS 约定的那个; 测试传入自己的名字,
+    /// 以免测试进程写坏正在运行的 WujieFan 发布给 RTSS 的数据 ——
+    /// 发布语义的测试不该把用户的覆盖层弄成空白。
+    /// </summary>
+    private readonly string _mappingName;
+
     private IntPtr _hMapping = IntPtr.Zero;
     private IntPtr _pView = IntPtr.Zero;
     private bool _disposed;
     private int _lastLength;
+
+    /// <summary>用 RTSS 约定的映射名。</summary>
+    public AidaSharedMemory() : this(MappingName) { }
+
+    /// <summary>用指定的映射名 (供测试隔离)。</summary>
+    public AidaSharedMemory(string mappingName)
+    {
+        if (string.IsNullOrWhiteSpace(mappingName))
+            throw new ArgumentException("映射名不能为空。", nameof(mappingName));
+        _mappingName = mappingName;
+    }
 
     public bool IsOpen => _pView != IntPtr.Zero;
     public string? LastXml { get; private set; }
@@ -50,15 +68,19 @@ public sealed class AidaSharedMemory : IDisposable
     /// <summary>创建或打开共享内存。已存在同名映射时复用。</summary>
     public void Open()
     {
+        // Dispose 之后这个实例已经没有可用状态, 再 Open 会重新建映射而没人释放它。
+        // 与其静默泄漏一个 64KB 的映射视图, 不如让调用方知道它用错了对象。
+        if (_disposed) throw new ObjectDisposedException(nameof(AidaSharedMemory));
+
         if (IsOpen) return;
 
         // 注意参数顺序: dwMaximumSizeHigh 在前, dwMaximumSizeLow 在后。
         // 写反会请求 64K * 4GB 的映射, 直接报 Win32 错误 8 (内存不足)。
         _hMapping = CreateFileMapping(new IntPtr(-1), IntPtr.Zero,
-            PageReadWrite, 0, (uint)MappingSize, MappingName);
+            PageReadWrite, 0, (uint)MappingSize, _mappingName);
 
         if (_hMapping == IntPtr.Zero)
-            throw new AidaException($"CreateFileMapping({MappingName}) 失败，Win32 错误 {Marshal.GetLastWin32Error()}");
+            throw new AidaException($"CreateFileMapping({_mappingName}) 失败，Win32 错误 {Marshal.GetLastWin32Error()}");
 
         _pView = MapViewOfFile(_hMapping, FileMapAccess.AllAccess, 0, 0, (UIntPtr)MappingSize);
         if (_pView == IntPtr.Zero)
@@ -95,6 +117,12 @@ public sealed class AidaSharedMemory : IDisposable
 
         string xml = BuildXml(snapshot);
         LastXml = xml;
+
+        // 空 XML 表示"这一帧没有数据", 不是"把数据清空"。
+        // RTSS 侧是一次性读整串的消费者, 看到空串会当作没有更新、保留上一次的值;
+        // 若这里照旧零填充写入, 就变成了主动抹掉 —— 消费者丢数值而不是保持。
+        // 语义写在这里而不是调用方, 因为调用方有两种 (轮询成功/失败), 都该一致。
+        if (xml.Length == 0) return;
 
         byte[] bytes = Encoding.UTF8.GetBytes(xml);
         int capacity = MappingSize;

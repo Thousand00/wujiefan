@@ -64,7 +64,11 @@ public sealed class FanSample
         if (count >= 0x4000)
             return (0, "计数值越界(无有效信号)");
         if (count < 0x80)
-            return (9999, "超量程(>16700RPM)");
+            // 阈值按 TachConstant=2156250 算出: count=0x80(128) 时是 16845 RPM,
+            // count 再小一档就超过它。早先写的是 16700, 那是照着一台机器的实测值
+            // 抄的, 和这里真正用的常数对不上 —— 文案写错方向的话, 用户拿它去对照
+            // 别的软件读数时会以为某一方坏了。
+            return (9999, "超量程(>16845RPM)");
         return (EcRegisters.TachConstant / count, "");
     }
 }

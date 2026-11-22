@@ -92,7 +92,7 @@ public sealed class HotKeyCombo : IEquatable<HotKeyCombo>
             }
 
             if (sawKey) return false;
-            if (!s_nameToVk.TryGetValue(token, out vk)) return false;
+            if (!TryReadKey(token, out vk)) return false;
             sawKey = true;
         }
 
@@ -135,6 +135,40 @@ public sealed class HotKeyCombo : IEquatable<HotKeyCombo>
     public static string KeyName(int virtualKey) =>
         s_vkToName.TryGetValue(virtualKey, out string? name) ? name : "0x" + virtualKey.ToString("X2");
 
+    /// <summary>
+    /// 这个键能不能被序列化成可解析的名字。
+    ///
+    /// 白名单外的键 (PrintScreen / CapsLock / Pause / 小键盘 +/- ...) <see cref="KeyName"/>
+    /// 只能退回 "0x2C" 这种写法, 而 <see cref="TryParse"/> 原本不认它 —— 于是会出现
+    /// "录制成功 → 当次不生效 → 下次启动被当成手改坏了清空" 的静默数据丢失。
+    /// 现在解析侧已经能认回 "0xXX", 两边等价; 这个方法留给界面做"先说清楚"的入口。
+    /// </summary>
+    public static bool IsRepresentable(int virtualKey) =>
+        virtualKey != 0 && (s_vkToName.ContainsKey(virtualKey) || (virtualKey > 0 && virtualKey <= 0xFF));
+
+    /// <summary>
+    /// 按键名或十六进制写法解析出虚拟键码。
+    ///
+    /// 认 "0x2C" 是为了让 <see cref="ToSettingString"/> 与 <see cref="TryParse"/> 往返恒等:
+    /// 白名单外的键只能写成十六进制, 解析器若不认, 存进去的字符串下次就会被判成坏值。
+    /// </summary>
+    private static bool TryReadKey(string token, out int virtualKey)
+    {
+        virtualKey = 0;
+        if (s_nameToVk.TryGetValue(token, out virtualKey)) return true;
+
+        if (token.Length is < 3 or > 4) return false;
+        if (token[0] != '0' || (token[1] != 'x' && token[1] != 'X')) return false;
+
+        if (!int.TryParse(token.AsSpan(2), System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture, out int vk))
+            return false;
+
+        if (vk <= 0 || vk > 0xFF) return false;
+        virtualKey = vk;
+        return true;
+    }
+
     private static bool TryReadModifier(string token, out HotKeyModifiers modifier)
     {
         switch (token.ToUpperInvariant())
@@ -167,8 +201,12 @@ public sealed class HotKeyCombo : IEquatable<HotKeyCombo>
 
     /// <summary>
     /// 可录入的按键白名单。刻意不含 Esc (它是录制的取消手势), 也不含鼠标键
-    /// (RegisterHotKey 本来就只认键盘)。Num+ / Num- 也不在里面: 它们的名字里
-    /// 带 '+' / '-', 和分隔符撞车, 为了两个键把解析器复杂化不值得。
+    /// (RegisterHotKey 本来就只认键盘)。Num+ / Num- 用 "NumPlus" / "NumMinus"
+    /// 这两个名字, 不写成 "+" / "-": 后两者与解析器的分隔符撞车。
+    ///
+    /// 白名单之外的键并不是"不能用", 而是只能存成 "0x2C" 这种十六进制写法。
+    /// 解析器认这种写法, 所以往返仍然恒等 —— 只是界面上的名字不好看。
+    /// 常见键 (PrintScreen / CapsLock / Pause / 小键盘加减等) 都已补进表里。
     /// </summary>
     private static Dictionary<string, int> BuildNameToVk()
     {
@@ -209,6 +247,18 @@ public sealed class HotKeyCombo : IEquatable<HotKeyCombo>
         map["Num*"] = 0x6A;
         map["Num/"] = 0x6F;
         map["Num."] = 0x6E;
+
+        // 这几个键原本不在表里, 只能退回 "0x2C" 这种十六进制写法 —— 界面显示成
+        // "Ctrl+0x2C" 既看不懂也不可信。它们都是正常的可组合键, 补上名字即可。
+        // NumPlus / NumMinus 用全名而不是 "+" / "-": 后两者与分隔符撞车。
+        map["PrintScreen"] = 0x2C;
+        map["CapsLock"] = 0x14;
+        map["NumLock"] = 0x90;
+        map["ScrollLock"] = 0x91;
+        map["Pause"] = 0x13;
+        map["Apps"] = 0x5D;
+        map["NumPlus"] = 0x6B;
+        map["NumMinus"] = 0x6D;
 
         return map;
     }

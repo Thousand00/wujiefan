@@ -179,11 +179,13 @@ internal sealed class SettingsDialogForm : Form
     private Rectangle _hotKeyCaptionRect;
     private Rectangle _hotKeyPillRect;
     private Rectangle _hotKeyRecordRect;
+    private Rectangle _hotKeyClearRect;
     private Rectangle _hotKeyNoteRect;
 
     private bool _hoverSave;
     private bool _hoverCancel;
     private bool _hoverRecord;
+    private bool _hoverClear;
 
     /// <summary>当前的热键设置串 (规范写法, 空串 = 没设)。只在 Commit 时写回 settings。</summary>
     private string _hotKey = "";
@@ -217,6 +219,16 @@ internal sealed class SettingsDialogForm : Form
 
         BuildControls();
         LayoutDialog();
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+
+        // 与主窗口同样的理由: 设计坐标按 Dpi.Px() 换算, 换显示器后必须重排一次,
+        // 否则 ClientSize 还是旧比例, 文字与圆角框会互相压住。
+        LayoutDialog();
+        Invalidate(true);
     }
 
     private void BuildControls()
@@ -351,11 +363,15 @@ internal sealed class SettingsDialogForm : Form
 
         int recordW = Dpi.Px(this, 72);
         int recordGap = Dpi.Px(this, 8);
+        int clearW = Dpi.Px(this, 56);
 
+        // 两个按钮并排: 先占右边的"录制", "清除"放在它左边。
+        // 不给清除入口的话, 用户一旦设了热键就再也没法回到"不占用任何键"。
         _hotKeyCaptionRect = new Rectangle(padX, y + (boxH - lineH) / 2, captionW, lineH);
-        _hotKeyPillRect = new Rectangle(padX + captionW - Dpi.Px(this, 4), y,
-            inner - captionW + Dpi.Px(this, 4) - recordW - recordGap, boxH);
         _hotKeyRecordRect = new Rectangle(padX + inner - recordW, y, recordW, boxH);
+        _hotKeyClearRect = new Rectangle(_hotKeyRecordRect.Left - recordGap - clearW, y, clearW, boxH);
+        _hotKeyPillRect = new Rectangle(padX + captionW - Dpi.Px(this, 4), y,
+            _hotKeyClearRect.Left - recordGap - (padX + captionW - Dpi.Px(this, 4)), boxH);
         y += boxH + Dpi.Px(this, 6);
 
         _hotKeyNoteRect = new Rectangle(padX, y, inner, Dpi.Px(this, 18));
@@ -433,6 +449,12 @@ internal sealed class SettingsDialogForm : Form
         // "录制"按钮: 录制中换成强调色, 让人一眼看出现在在等按键
         DrawButton(g, _hotKeyRecordRect, _recording ? "按组合键…" : "录制",
             primary: _recording, _hoverRecord);
+
+        // "清除"只在真的设了键位时可用: 没设的时候它点了也没事可做,
+        // 画成灰的比点了没反应诚实。
+        bool hasHotKey = _hotKey.Length > 0 || _recording;
+        DrawButton(g, _hotKeyClearRect, "清除", primary: false,
+            hover: hasHotKey && _hoverClear, enabled: hasHotKey);
 
         TextRenderer.DrawText(g, _recordHint, Theme.RowHint, _hotKeyNoteRect,
             _recordHint.Length > 0 ? Theme.Warn : Theme.Text3,
@@ -602,7 +624,7 @@ internal sealed class SettingsDialogForm : Form
         return true;
     }
 
-    private void DrawButton(Graphics g, Rectangle rect, string text, bool primary, bool hover)
+    private void DrawButton(Graphics g, Rectangle rect, string text, bool primary, bool hover, bool enabled = true)
     {
         if (rect.IsEmpty) return;
 
@@ -610,7 +632,7 @@ internal sealed class SettingsDialogForm : Form
         Color fill = primary
             ? (hover ? Theme.Accent : Theme.Panel2)
             : (hover ? Theme.Panel : Theme.LineSoft);
-        Color fore = primary && hover ? Theme.AppBg : Theme.Text1;
+        Color fore = !enabled ? Theme.Text3 : (primary && hover ? Theme.AppBg : Theme.Text1);
 
         using (var path = Round.Path(rf, Dpi.PxF(this, 8)))
         using (var brush = new SolidBrush(fill))
@@ -629,26 +651,29 @@ internal sealed class SettingsDialogForm : Form
         bool hs = _saveRect.Contains(e.Location);
         bool hc = _cancelRect.Contains(e.Location);
         bool hr = _hotKeyRecordRect.Contains(e.Location);
+        bool hcl = _hotKeyClearRect.Contains(e.Location) && (_hotKey.Length > 0 || _recording);
 
-        if (hs != _hoverSave || hc != _hoverCancel || hr != _hoverRecord)
+        if (hs != _hoverSave || hc != _hoverCancel || hr != _hoverRecord || hcl != _hoverClear)
         {
             _hoverSave = hs;
             _hoverCancel = hc;
             _hoverRecord = hr;
+            _hoverClear = hcl;
             Invalidate();
         }
 
-        Cursor = (hs || hc || hr) ? Cursors.Hand : Cursors.Default;
+        Cursor = (hs || hc || hr || hcl) ? Cursors.Hand : Cursors.Default;
         base.OnMouseMove(e);
     }
 
     protected override void OnMouseLeave(EventArgs e)
     {
-        if (_hoverSave || _hoverCancel || _hoverRecord)
+        if (_hoverSave || _hoverCancel || _hoverRecord || _hoverClear)
         {
             _hoverSave = false;
             _hoverCancel = false;
             _hoverRecord = false;
+            _hoverClear = false;
             Invalidate();
         }
 
@@ -661,6 +686,15 @@ internal sealed class SettingsDialogForm : Form
         if (e.Button != MouseButtons.Left) return;
 
         if (_hotKeyRecordRect.Contains(e.Location)) { StartRecording(); return; }
+
+        // "清除"= 回到"没有全局快捷键"。这条路径必须存在, 否则用户设过之后就
+        // 再也回不到不占用任何键的状态 —— 而"不设"本身是一个合理的选项。
+        if (_hotKeyClearRect.Contains(e.Location))
+        {
+            _hotKey = "";
+            StopRecording("已清除快捷键, 保存后生效。");
+            return;
+        }
 
         // 点别处就结束录制: 用户已经不想录了, 别让它一直挂着等按键。
         if (_recording) StopRecording("已取消录制, 原来的快捷键不变。");

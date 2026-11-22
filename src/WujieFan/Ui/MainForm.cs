@@ -248,6 +248,19 @@ public sealed class MainForm : Form
         TitleBarChrome.ApplyRoundedCorners(Handle);
     }
 
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+
+        // Dpi.Px() 按 DeviceDpi 换算, 字号按 point 自动放大 —— 换到另一块
+        // 缩放比不同的显示器时, 必须整窗重排一次, 否则子控件还停在旧比例上,
+        // 而 Region 也还是旧尺寸, 会出现"内容比窗口小一圈"的错位。
+        if (_disposedUi || IsDisposed) return;
+
+        Relayout();
+        Invalidate(true);
+    }
+
     /// <summary>
     /// 句柄重建后把窗口外观重新套一遍: 原生圆角是绑在句柄上的, 改 ShowInTaskbar
     /// 或 Hide/Show 都会换一个新句柄, 新句柄默认没有圆角; 顺便按当前真实尺寸重算一次
@@ -341,7 +354,12 @@ public sealed class MainForm : Form
         // 0.1.0 用 schtasks 模板建的旧任务带着"拔电源不启动"和"72 小时被强杀",
         // 用户不会为了升级再去勾一次自启动, 所以这里主动修。
         // 但只在确实不符合时才重写 —— 每次启动都跑 schtasks 既慢又在动系统。
-        if (!_autoStart.HasForeignTask() && _autoStart.IsEnabled() && !_autoStart.IsUpToDate())
+        //
+        // 只查一次: 原来 HasForeignTask + IsEnabled 各查一次、IsUpToDate 内部又查两次,
+        // 四次同步 schtasks 串在 UI 线程上, 正常也要几百毫秒白屏。
+        // 归属判定用同一次查询的结论, 只有确实属于我们时才去做"是否过期"的细查。
+        AutoStartManager.TaskState startupTask = _autoStart.QueryState();
+        if (startupTask == AutoStartManager.TaskState.Ours && !_autoStart.IsUpToDate())
         {
             AutoStartManager.Result fix = _autoStart.Enable();
             if (!fix.Ok)
@@ -407,7 +425,16 @@ public sealed class MainForm : Form
     /// </summary>
     private void ApplyHotKey()
     {
-        HotKeyCombo.TryParse(_settings.StrongCoolHotKey, out HotKeyCombo? combo);
+        // 解析失败不能让后面静默地当成"没设热键": TryParse 返回 false 说明配置文件里
+        // 是一段谁也不认的文本 (手改坏了, 或者旧版本写进去的不可表示形式)。
+        // 只注销、报错, 不清空 —— 清空就真的丢了, 留着至少用户可以照着改。
+        if (!HotKeyCombo.TryParse(_settings.StrongCoolHotKey, out HotKeyCombo? combo))
+        {
+            _hotKey.Unregister();
+            SetStatus("全局快捷键的写法无法识别, 已暂时停用: " + _settings.StrongCoolHotKey, Theme.Warn);
+            UiLog("GlobalHotKey: 无法解析的键位写法 \"" + _settings.StrongCoolHotKey + "\"");
+            return;
+        }
 
         if (!_hotKey.TryRegister(combo, out string? error))
         {
@@ -456,15 +483,27 @@ public sealed class MainForm : Form
 
         // 打开前重新问一次计划任务的真实状态: 用户可能在程序之外用任务计划程序
         // 或别的工具动过它, 只信启动时那次快照会把界面显示错。
+        //
+        // 只查一次, 并且把结果复用到展示与决策两处。曾经是展示查一次、决策再查一次,
+        // 两次之间任何抖动 (schtasks 超时、权限瞬时失败) 都会让结论前后矛盾 ——
+        // 最坏的组合是"第一次说没开、第二次说开着", 于是判定需要关闭,
+        // 把用户原本正常的自启动任务删掉。查不到 (Unknown) 时锁定并置灰,
+        // 因为此时**无法确认**任何事, 动它就是瞎动。
         var state = new AutoStartState();
-        if (_autoStart.HasForeignTask())
+        AutoStartManager.TaskState taskState = _autoStart.QueryState();
+        if (taskState == AutoStartManager.TaskState.Unknown)
+        {
+            state.Locked = true;
+            state.Hint = "(查询计划任务失败, 已锁定)";
+        }
+        else if (taskState == AutoStartManager.TaskState.Foreign)
         {
             state.Locked = true;
             state.Hint = "(同名任务已存在, 已锁定)";
         }
         else
         {
-            state.Enabled = _autoStart.IsEnabled();
+            state.Enabled = taskState == AutoStartManager.TaskState.Ours;
         }
 
         // 打开弹窗之前先注销热键。两个原因:
@@ -511,13 +550,14 @@ public sealed class MainForm : Form
         // RTSS 供数开关是纯本地状态, 立刻生效。
         _publisher.Apply();
 
-        // 热键换了就重新注册。放在落盘之后: 注册失败时 ApplyHotKey 会把设置里的
-        // 那一项清空并再存一次, 得先保证新值已经写进去了。
+        // 热键换了就重新注册。放在落盘之后: 得先保证新值已经写进去了。
         ApplyHotKey();
 
         // 开机自启要动系统: 按用户选的目标态执行, 失败则把界面拉回真实状态。
+        // 决策复用上面那一次查询的结果, 不再重复问 schtasks —— 见上方注释。
         bool wantAutoStart = state.Enabled && !state.Locked;
-        if (!state.Locked && wantAutoStart != _autoStart.IsEnabled())
+        bool currentlyOn = taskState == AutoStartManager.TaskState.Ours;
+        if (!state.Locked && wantAutoStart != currentlyOn)
         {
             AutoStartManager.Result result = wantAutoStart ? _autoStart.Enable() : _autoStart.Disable();
             if (result.Ok)

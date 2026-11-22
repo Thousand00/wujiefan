@@ -46,6 +46,10 @@ internal sealed class FanModeController
 
     /// <summary>
     /// 本会话是否仍持有"强冷"意图 —— 由用户操作或启动归一化确认, 与 EC 回读的实时模式无关。
+    ///
+    /// 注意"无关"的边界: 单次回读不同不会改它 (那可能只是我们自己的中间态), 但连续
+    /// <see cref="DivergedSamplesToGiveUp"/> 次确认 EC 已不是强冷时会主动撤销,
+    /// 因为看门狗把意图当作"现在确实在手动满转"的授权。
     /// </summary>
     private bool _strongCoolIntent;
 
@@ -57,6 +61,12 @@ internal sealed class FanModeController
 
     /// <summary>模式被外部改掉的告警只发一次, 避免每秒刷屏; 模式回到强冷或意图清除后复位。</summary>
     private bool _modeDiverged;
+
+    /// <summary>连续几次回读不是强冷才认定"被外部改掉", 见 <see cref="DivergedSamplesToGiveUp"/>。</summary>
+    private int _divergedSamples;
+
+    /// <summary>关机交还只做一次。0=未做, 1=已做; 用 <see cref="Interlocked.Exchange"/> 抢。</summary>
+    private int _shutdownRestoreStarted;
 
     /// <summary>强冷意图期间连续拿到无效温度的采样数, 与读失败共用阈值。</summary>
     private int _tempUnknownSamples;
@@ -81,6 +91,15 @@ internal sealed class FanModeController
     /// <summary>交还原因串。交还流程用它挑选文案, 也写进日志。</summary>
     private const string ReadFailReason = "EC 读取持续失败";
 
+    /// <summary>
+    /// 连续几次回读不是强冷, 才认定意图已被外部改掉并撤销。
+    ///
+    /// 取 2 而不是 1: 我们自己的写序是 PWM1 → PWM2 → Flag1 → Flag2, 中间任何一刻被
+    /// 采样线程插进来都会读到"一个强冷一个自动"的 Mixed。那是我们自己的中间态,
+    /// 不是外部改掉 —— 一次就撤意图, 用户会看到强冷莫名其妙地被放弃。
+    /// </summary>
+    private const int DivergedSamplesToGiveUp = 2;
+
     /// <summary>另一条"确认不了"的路径: EC 读得到, 但温度寄存器给不出有效值。</summary>
     private const string TempUnknownReason = "温度读数无效";
 
@@ -100,9 +119,6 @@ internal sealed class FanModeController
 
     /// <summary>正在切换模式。轮询那边据此暂停"按回读校准界面", 免得把写入过程中的中间态画出来。</summary>
     public bool Busy => _busy;
-
-    /// <summary>本会话是否仍主张强冷。退出路径用它判断要不要写 EC。</summary>
-    public bool HasIntent => _strongCoolIntent;
 
     /// <summary>
     /// 过热阈值 (摄氏度), 每次判定时现读设置。
@@ -151,12 +167,12 @@ internal sealed class FanModeController
 
         // 取反的依据是"用户看见的状态", 不是"上一拍的意图"。
         //
-        // 两者在正常情况下一致, 但 Observe() 里有一条路径会让它们分叉:
-        // EC 里的强冷标志被别的软件改回自动时, 界面已经同步成自动并给了警告,
-        // 而 _strongCoolIntent 也被置回了 false —— 这一支是同步的, 所以用勾选框
-        // 和用意图结果相同。真正要防的是**勾选框还没被 Observe 校准**的那一小段:
-        // 用户在托盘里按热键时, 勾选框是最后一次 UI 更新的结果, 也就是用户眼里
-        // 的当前状态。按它取反, 用户按一下看到的就一定与自己预期一致。
+        // 两者在正常情况下一致, 但 Observe() 里有几条路径会让它们分叉:
+        // EC 里的强冷标志被别的软件改回自动、且连续两次回读确认后, 界面已经同步成
+        // 自动, _strongCoolIntent 也被撤销了 —— 这一支是同步的, 用哪个结果都一样。
+        // 真正要防的是**勾选框还没被 Observe 校准**的那一小段: 用户在托盘里按热键时,
+        // 勾选框是最后一次 UI 更新的结果, 也就是用户眼里的当前状态。按它取反,
+        // 用户按一下看到的就一定与自己预期一致。
         FanMode target = _row.Checked ? FanMode.Auto : FanMode.StrongCool;
 
         FanModeResult result = SetMode(target, userInitiated: false);
@@ -186,12 +202,13 @@ internal sealed class FanModeController
     /// </summary>
     public void NormalizeOnStartup()
     {
-        // 启动时的意图由设置决定, 与接下来读到的 EC 状态无关 —— 这是看门狗的唯一授权来源。
-        _strongCoolIntent = _settings.FanMode == FanMode.StrongCool;
-
         FanReader? reader = _reader();
         if (reader is null || !reader.IsOpen)
         {
+            // 设备打不开时不能授予意图: 看门狗拿它当"现在确实在手动满转"的授权,
+            // 而此刻我们连 EC 都读不到, 更没写过任何寄存器。授权一个不存在的手动
+            // 满转, 只会在下一轮温度未知时触发一条莫名其妙的"已交还自动模式"。
+            _strongCoolIntent = false;
             UpdateUi(FanModeState.Unknown);
             return;
         }
@@ -210,11 +227,16 @@ internal sealed class FanModeController
 
         if (matches)
         {
+            // 意图必须跟着**真实状态**走: 设置说强冷、EC 也确认是强冷, 才算授权成立。
+            // 设置说强冷而 EC 回读不出来 (Unknown) 会落到下面的 SetMode, 由它重写一遍
+            // 并在成功后建立意图 —— 那条路径本来就有回读确认。
+            _strongCoolIntent = want == FanMode.StrongCool && actual == FanModeState.StrongCool;
             UpdateUi(actual);
             return;
         }
 
         // 归一化失败不该弹框打断开机, 但必须留下可见痕迹。
+        // SetMode 成功时会自己建立意图, 失败时保持 false。
         SetMode(want, userInitiated: false, reason: "已按设置恢复自动模式 (清理上次残留)。");
     }
 
@@ -239,17 +261,40 @@ internal sealed class FanModeController
 
             // 意图仍是强冷、EC 里却已经不是强冷: 说明被外部改掉了 (别的软件、EC 自己
             // 或一次失败的写入)。这是必须让用户知道的状态漂移, 但不能每秒刷屏。
-            if (_strongCoolIntent && sample.Mode != FanModeState.StrongCool && !_modeDiverged)
+            if (_strongCoolIntent && sample.Mode != FanModeState.StrongCool)
             {
-                _modeDiverged = true;
-                UiLog($"强冷意图仍然有效, 但 EC 实际模式是 {sample.Mode}");
-                _setStatus(
-                    "EC 里的强冷标志已被改回自动 (可能被其他软件重置), 界面已同步为真实状态。",
-                    Theme.Warn);
+                // 要连续两次才认。一次 Mixed 可能只是我们自己的两路标志写入之间被读了
+                // 一眼 (Fan1 已 0xDC / Fan2 还是 0x00), 那不是"外部改掉", 撤意图就等于
+                // 因为一次抖动把用户的强冷悄悄放弃掉 —— 与"静默丢数据"是同一类错误。
+                _divergedSamples++;
+
+                if (!_modeDiverged && _divergedSamples >= DivergedSamplesToGiveUp)
+                {
+                    _modeDiverged = true;
+
+                    // 意图跟着撤: 看门狗的唯一授权来源就是它。留着一条已经和现实不符的
+                    // 意图, 等于让过热保护为"实际已经不存在的强冷"持续累计、并占用状态栏。
+                    _strongCoolIntent = false;
+                    _hotSamples = 0;
+                    _tempUnknownSamples = 0;
+
+                    UiLog($"强冷意图被撤销: EC 连续 {_divergedSamples} 次回读为 {sample.Mode}");
+                    _setStatus(
+                        "EC 里的强冷标志已被改回自动 (可能被其他软件重置), 界面已同步为真实状态。",
+                        Theme.Warn);
+                }
             }
-            else if (sample.Mode == FanModeState.StrongCool)
+            else
             {
-                _modeDiverged = false;
+                _divergedSamples = 0;
+
+                if (sample.Mode == FanModeState.StrongCool && _modeDiverged)
+                {
+                    // 恢复后要把一次性的警告状态清掉, 否则下次再漂移就不会告警了,
+                    // 而状态栏会一直停在红字上, 让人以为强冷已经坏了。
+                    _modeDiverged = false;
+                    _setStatus("强冷标志已恢复, 界面与 EC 一致。", Theme.Text2);
+                }
             }
         }
 
@@ -407,6 +452,7 @@ internal sealed class FanModeController
                 _readFailSamples = 0;
                 _tempUnknownSamples = 0;
                 _modeDiverged = false;
+                _divergedSamples = 0;
 
                 if (mode == FanMode.StrongCool)
                 {
@@ -525,6 +571,7 @@ internal sealed class FanModeController
         _readFailSamples = 0;
         _tempUnknownSamples = 0;
         _modeDiverged = false;
+        _divergedSamples = 0;
 
         // 先改设置再动硬件: 万一 SetMode 抛异常, 至少下次启动不会再拉满。
         _settings.FanMode = FanMode.Auto;
@@ -621,15 +668,33 @@ internal sealed class FanModeController
     /// 判据是"确认处于自动才跳过", 而不是"只有强冷才交还":
     /// Mixed (两路标志不一致, 例如 Fan1=0xDC / Fan2=0x00) 恰恰是最该收手的状态 ——
     /// 一个风扇还在按手动 184 满转, 而另一个已经交还 EC, 这种分裂残留如果留在
-    /// 关机时刻, 下次开机就是"一个满转一个不转"的怪状态。Unknown 才真的没得做。
+    /// 关机时刻, 下次开机就是"一个满转一个不转"的怪状态。
+    ///
+    /// Unknown 同样要写一次: 读不出来等于**无法确认**它是干净的, 而写 Auto 是幂等的。
+    /// 关机这一刻赌错的代价是下次开机一个风扇满转, 多写一次的成本是几毫秒。
     /// </summary>
     public void RestoreAutoOnShutdown()
     {
+        // 关机路径会被调两次: SessionEnding (SystemEvents 的回调线程) 一次,
+        // Dispose (UI 线程) 又一次。两次都去读改 EC, 除了多写一遍, 还可能让
+        // 后一次读到前一次写了一半的中间态而误报"状态不确定"。
+        // 用一次性标志卡住: 只让第一个到达的执行, 后来者直接返回。
+        if (Interlocked.Exchange(ref _shutdownRestoreStarted, 1) != 0)
+        {
+            UiLog("RestoreAutoOnShutdown: 已经执行过, 本次跳过");
+            return;
+        }
+
         FanReader? reader = _reader();
         if (reader is not { IsOpen: true }) return;
 
         FanModeState before = reader.ReadModeState();
-        if (before is FanModeState.Auto or FanModeState.Unknown) return;
+
+        // 只有"确认是自动"才跳过。Unknown 曾经也被跳过, 理由是"读不出来就没得做" ——
+        // 但写一次 Auto 是幂等的, 而读不出来恰恰说明**无法确认**安全: 关闭窗口那一刻
+        // 若 PWM 仍停在 184, 重启后 EC 不清 RAM 就还是一个风扇满转。
+        // 宁可多写一次已经被自动覆盖的寄存器, 也不要赌它是干净的。
+        if (before == FanModeState.Auto) return;
 
         FanModeResult r = reader.SetMode(FanMode.Auto);
 

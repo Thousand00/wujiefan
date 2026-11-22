@@ -19,6 +19,15 @@ internal sealed class RtssPublisher : IDisposable
 
     private AidaSharedMemory? _aida;
 
+    /// <summary>
+    /// 上一次成功发布时的风扇身份 (Id + 标签)。
+    ///
+    /// 读失败时要发布一帧"值全空"的数据, 而那时手里没有 FanSample, 只能靠这份记忆
+    /// 还原出 RTSS 认识的槽位。没有它就只能整帧不发, 覆盖层会一直停在最后一次成功
+    /// 读到的温度和转速 —— 那是安全感知上最不该出现的"静默陈旧"。
+    /// </summary>
+    private IReadOnlyList<FanEntry>? _lastFanEntries;
+
     /// <summary>上一次尝试重建 AIDA64 共享内存的刻度, 用来给重建加退避。</summary>
     private long _lastTryTicks;
 
@@ -90,7 +99,8 @@ internal sealed class RtssPublisher : IDisposable
 
         try
         {
-            _aida.Publish(ToSnapshot(sample));
+            FanSnapshot snapshot = ToSnapshot(sample);
+            _aida.Publish(snapshot);
         }
         catch (Exception ex)
         {
@@ -101,16 +111,60 @@ internal sealed class RtssPublisher : IDisposable
         }
     }
 
-    private static FanSnapshot ToSnapshot(FanSample s) => new()
+    /// <summary>
+    /// 读失败时调一次: 把"没有数据"这件事明确推给消费端。
+    ///
+    /// 不发帧的话, 覆盖层会一直显示上一次读到的温度和转速 —— EC 掉线、休眠后句柄失效
+    /// 这些情况下, 用户看到的是一个稳定但已经完全失真的数字, 比显示空白危险得多。
+    /// 这里发的是"槽位都在、值全空"的一帧: RTSS 那边显示成空/N/A, 而不是旧值。
+    ///
+    /// 还没成功发布过任何一帧时 (刚启动就失败) 手里没有槽位, 什么都不发 ——
+    /// 那时覆盖层本来也没有旧值可清。
+    /// </summary>
+    public void PublishUnavailable()
     {
-        Fans = s.Fans.Select(f => new FanEntry
+        if (!_settings.PublishToRtss) return;
+        if (_aida is not { IsOpen: true } || _lastFanEntries is null) return;
+
+        try
         {
-            Id = $"FAN{f.Index}",
-            Label = f.Label,
-            ValueText = f.IsValid ? (f.IsStopped ? "0" : f.Rpm.ToString()) : "",
-        }).ToArray(),
-        Temperature = s.Temperature,
-    };
+            _aida.Publish(new FanSnapshot
+            {
+                Fans = _lastFanEntries.Select(f => new FanEntry
+                {
+                    Id = f.Id,
+                    Label = f.Label,
+                    ValueText = "",
+                }).ToArray(),
+                Temperature = null,
+            });
+        }
+        catch (Exception ex)
+        {
+            _aida.Dispose();
+            _aida = null;
+            _setStatus("向 RTSS 供数失败: " + ex.Message, Theme.Warn);
+        }
+    }
+
+    private FanSnapshot ToSnapshot(FanSample s)
+    {
+        var snapshot = new FanSnapshot
+        {
+            Fans = s.Fans.Select(f => new FanEntry
+            {
+                Id = $"FAN{f.Index}",
+                Label = f.Label,
+                ValueText = f.IsValid ? (f.IsStopped ? "0" : f.Rpm.ToString()) : "",
+            }).ToArray(),
+            Temperature = s.Temperature,
+        };
+
+        // 只在有槽位时记住它。空集合交给下面那句判空挡住, 免得把"上次的槽位"
+        // 覆盖成空的, 让之后的失败帧再也没东西可发。
+        if (snapshot.Fans.Count > 0) _lastFanEntries = snapshot.Fans;
+        return snapshot;
+    }
 
     public void Dispose()
     {

@@ -49,6 +49,84 @@ public class HotKeyComboTests
         Assert.Null(b);
     }
 
+    // ── 往返恒等：存得进去的，必须读得回来 ────────────────────────────────
+
+    /// <summary>
+    /// 这一组防的是一个真实发生过的数据丢失：录制时用 e.KeyValue 直接构造候选，
+    /// 白名单外的键（PrintScreen、CapsLock、小键盘 +/- 之类）会被 ToSettingString
+    /// 写成 "Ctrl+0x2C"，而 TryParse 只认名字表、不认十六进制 —— 于是
+    /// 当次注册不上（界面看着像设好了），下次启动 Load 解析失败把它清成空串。
+    ///
+    /// 修法是两条一起：TryParse 认 0xXX 写法，白名单补上最常见的那些键。
+    /// 这里按"所有 1..0xFF 的虚拟键码"全扫一遍，而不是抽几个样例：
+    /// 漏掉一个没人想到的键，症状就是那一个键静默失效。
+    /// </summary>
+    [Fact]
+    public void 任何可表示的虚拟键码_往返后都能解析回来()
+    {
+        int roundTripped = 0;
+
+        for (int vk = 1; vk <= 0xFF; vk++)
+        {
+            if (!HotKeyCombo.IsRepresentable(vk)) continue;
+
+            var original = new HotKeyCombo { Modifiers = HotKeyModifiers.Control, VirtualKey = vk };
+            string text = original.ToSettingString();
+
+            Assert.True(HotKeyCombo.TryParse(text, out HotKeyCombo? parsed),
+                $"虚拟键码 0x{vk:X2} 写成了 \"{text}\"，却解析不回来");
+            Assert.Equal(vk, parsed!.VirtualKey);
+            Assert.Equal(original.Modifiers, parsed.Modifiers);
+
+            // 规范化必须幂等：再写一遍得到同一个串。
+            Assert.Equal(text, parsed.ToSettingString());
+            roundTripped++;
+        }
+
+        // 全键码都应当可表示（TryReadKey 接受 0x01..0xFF 的十六进制），
+        // 这条断言是给"将来有人把 TryReadKey 的范围改成只认名字表"留的哨兵。
+        Assert.Equal(0xFF, roundTripped);
+    }
+
+    [Theory]
+    [InlineData(0x2C)]  // PrintScreen
+    [InlineData(0x14)]  // CapsLock
+    [InlineData(0x90)]  // NumLock
+    [InlineData(0x13)]  // Pause
+    [InlineData(0x5D)]  // Apps
+    [InlineData(0x6B)]  // Num+
+    [InlineData(0x6D)]  // Num-
+    public void 白名单外的常见键_也有可读的名字(int virtualKey)
+    {
+        // 这些键原本会写成 0xXX。虽然往返仍然恒等，但用户在设置界面看到
+        // "Ctrl+0x2C" 完全不知道那是什么键，所以给它们起了名字。
+        var combo = new HotKeyCombo { Modifiers = HotKeyModifiers.Control, VirtualKey = virtualKey };
+        string text = combo.ToSettingString();
+
+        Assert.DoesNotContain("0x", text);
+        Assert.True(HotKeyCombo.TryParse(text, out HotKeyCombo? parsed));
+        Assert.Equal(virtualKey, parsed!.VirtualKey);
+    }
+
+    [Theory]
+    [InlineData("Ctrl+0x2C", 0x2C)]
+    [InlineData("Ctrl+0X2c", 0x2C)]   // 小写 x、小写十六进制
+    [InlineData("Ctrl+0x7B", 0x7B)]   // F12 之后的空档
+    public void 十六进制写法也能解析(string text, int expectedVk)
+    {
+        Assert.True(HotKeyCombo.TryParse(text, out HotKeyCombo? combo));
+        Assert.Equal(expectedVk, combo!.VirtualKey);
+    }
+
+    [Theory]
+    [InlineData("Ctrl+0x00")]   // 0 表示没选键
+    [InlineData("Ctrl+0x100")]  // 超出字节范围
+    [InlineData("Ctrl+0xZZ")]   // 不是十六进制
+    public void 非法的十六进制写法被拒(string text)
+    {
+        Assert.False(HotKeyCombo.TryParse(text, out _));
+    }
+
     // ── 解析：坏写法必须被拒 ──────────────────────────────────────────────
 
     [Theory]
