@@ -411,11 +411,11 @@ public sealed class MainForm : Form
 
         if (!_hotKey.TryRegister(combo, out string? error))
         {
-            // 注册失败时把设置也清掉: 留着它会让用户以为下次启动会生效, 实际上
-            // 每次启动都会因为同样的原因失败。
-            _settings.StrongCoolHotKey = "";
-            SaveSettingsQuietly("清掉注册失败的快捷键");
-
+            // 注册失败不要清掉设置。曾经在这里把 StrongCoolHotKey 抹成空串, 理由是
+            // "留着会让用户以为下次会生效" —— 但这个理由站不住, 而且代价很实在:
+            // 升级/重启时旧实例还没退、仍占着同一个键, 新实例一启动就把用户的键位
+            // 永久删了(0.5.5 上线时就真丢了用户的 Ctrl+Shift+End)。占用者下次启动
+            // 时不一定还在, 所以正确的做法是保留键位、当场说清楚这次为什么没生效。
             SetStatus("全局快捷键不可用: " + error, Theme.Warn);
             UiLog("GlobalHotKey: " + error);
         }
