@@ -26,11 +26,6 @@ internal sealed class TrayHost : IDisposable
     private bool _hintShown;
     private bool _hiding;
 
-    /// <summary>
-    /// 本次会话的托盘图标没建出来。只存在内存里 —— 这是环境问题 (explorer 还没起、
-    /// 通知区域被占), 下次启动大概率就好, 不该替用户永久改掉 MinimizeToTray。
-    /// </summary>
-    private bool _fallbackNoTray;
 
     public TrayHost(
         Form form,
@@ -77,19 +72,11 @@ internal sealed class TrayHost : IDisposable
             // 从来没做过的选择, 而且他再也看不到那个开关被关掉的原因。
             // 本次会话降级为"关窗即退出"就够了: Available 会返回 false,
             // MainForm.OnFormClosing 据此直接退出, 不再尝试藏进不存在的托盘。
-            _fallbackNoTray = true;
             _icon = null;
             _setStatus("托盘图标创建失败, 本次改为关窗口即退出: " + ex.Message, Theme.Warn);
         }
     }
 
-    /// <summary>
-    /// 本次会话没有托盘可用 (创建失败)。只活在内存里, 不写进设置。
-    ///
-    /// 与 <see cref="Available"/> 的区别: 后者问"现在有没有图标对象",
-    /// 这里问"是不是曾经失败过", 用来在状态栏文案里说清这一次为什么不一样。
-    /// </summary>
-    public bool Unavailable => _fallbackNoTray;
 
     /// <summary>把隐藏的窗口叫回来 (托盘双击、托盘菜单、以及第二次启动的唤醒事件都走这里)。</summary>
     public void Restore()
