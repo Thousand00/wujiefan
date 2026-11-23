@@ -262,6 +262,12 @@ internal sealed class FanPollingController
             _fan1Card.Value = "--";
             _fan2Card.Value = "--";
             _tempCard.Value = "--";
+
+            // 刻度条一起清空。留着上一次的比例比留数字更误导: 数字至少看得出是旧的,
+            // 一条还在 60% 的条看起来就像"现在正转着"。
+            _fan1Card.SetMeterRaw(-1);
+            _fan2Card.SetMeterRaw(-1);
+            _tempCard.SetMeterRaw(-1);
             _publisher.PublishUnavailable();
 
             if (_consecutiveErrors >= 5)
@@ -287,6 +293,7 @@ internal sealed class FanPollingController
         }
 
         _tempCard.Value = sample.Temperature?.ToString() ?? "--";
+        _tempCard.SetMeter(sample.Temperature, DataCard.TempScaleC);
 
         // 回读校准 + 温度看门狗。顺序与拆分前一致 (先校准再判), 不要调换。
         _mode()?.Observe(sample);
@@ -301,6 +308,10 @@ internal sealed class FanPollingController
 
         // 圆点语义: 有可信读数=绿; 停转=灰 (正常但值得注意); 不可信=橙。
         card.DotColor = !f.IsValid ? Theme.Warn : (f.IsStopped ? Theme.Text3 : Theme.Ok);
+
+        // 刻度条只认可信读数。越界/读不稳定的值如果画成条, 会显示成"几乎满转",
+        // 而实际情况是根本没读到 —— 清空才诚实。
+        card.SetMeter(f.IsValid ? f.Rpm : null, DataCard.FanScaleRpm);
     }
 
     private static string FormatRpm(FanReading f)

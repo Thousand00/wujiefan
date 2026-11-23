@@ -418,11 +418,12 @@ internal sealed class SettingsDialogForm : Form
 
         // 外框与卡片底色, 与 DarkDialog 同一套画法
         var full = new RectangleF(0, 0, Width, Height);
-        using (var path = Round.Path(Round.Inset(full, 0.5f), Dpi.PxF(this, 12)))
-        using (var fill = new SolidBrush(Theme.WinBg))
+        var inset = Round.Inset(full, 0.5f);
+        using (var path = Round.Path(inset, Dpi.PxF(this, 12)))
         using (var pen = new Pen(Theme.Line))
         {
-            g.FillPath(fill, path);
+            // 与主窗口同向的竖渐变 (上亮下暗), 弹窗看起来才像同一套皮的
+            Fill.Vertical(g, path, inset, Theme.Panel, Theme.WinBg);
             g.DrawPath(pen, path);
         }
 

@@ -129,6 +129,7 @@ public sealed class MainForm : Form
         _tempCard.Unit = "°C";
         _tempCard.Value = "--";
         _tempCard.BigValue = false;
+        _tempCard.MeterColor = Theme.Hot;
 
         _strongCoolRow.Text = "强冷模式";
         _strongCoolRow.Hint = "(两个风扇满转)";
@@ -285,8 +286,7 @@ public sealed class MainForm : Form
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
-        using (var bg = new SolidBrush(Theme.WinBg))
-            g.FillRectangle(bg, ClientRectangle);
+        PaintWindowBackdrop(g);
 
         _chrome.Paint(g);
 
@@ -298,6 +298,34 @@ public sealed class MainForm : Form
         using var border = new Pen(Theme.Line);
         using var outline = Round.Path(Round.Inset(new RectangleF(0, 0, Width, Height), 0.5f), Dpi.PxF(this, 12));
         g.DrawPath(border, outline);
+    }
+
+    /// <summary>
+    /// 窗口底: 上略亮、下略暗的竖向渐变, 再铺一层 22px 网格暗纹 (alpha 5%)。
+    ///
+    /// 网格是纯装饰, 不响应任何输入。它铺在最底层, 卡片和状态栏都盖在上面,
+    /// 所以只在空隙里露出来 —— 那正是设计稿想要的效果: 有质感但不抢注意力。
+    /// </summary>
+    private void PaintWindowBackdrop(Graphics g)
+    {
+        var full = ClientRectangle;
+        if (full.Width <= 0 || full.Height <= 0) return;
+
+        using (var bg = new LinearGradientBrush(
+            new Rectangle(0, 0, full.Width, Math.Max(full.Height, 1)),
+            Theme.Panel, Theme.WinBg, LinearGradientMode.Vertical))
+        {
+            g.FillRectangle(bg, full);
+        }
+
+        int step = Dpi.Px(this, 22);
+        if (step < 6) return;
+
+        using var gridPen = new Pen(Theme.Grid);
+        for (int x = 0; x < full.Width; x += step)
+            g.DrawLine(gridPen, x, 0, x, full.Height);
+        for (int y = 0; y < full.Height; y += step)
+            g.DrawLine(gridPen, 0, y, full.Width, y);
     }
 
     // ---------------------------------------------------------------- 标题栏交互

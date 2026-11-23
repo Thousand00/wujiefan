@@ -46,19 +46,20 @@ internal sealed class TitleBarChrome
     {
         int padX = Dpi.Px(_form, 16);
 
-        // 品牌框: 28x28 圆角 7, 底色 panel-2, 里面画风扇
+        // 品牌框: 28x28 圆角 7, 上亮下暗 + 一圈内描边, 里面画风扇
         int mark = Dpi.Px(_form, 28);
         int markY = (Height - mark) / 2;
         var markRect = new RectangleF(padX, markY, mark, mark);
 
         using (var markPath = Round.Path(markRect, Dpi.PxF(_form, 7)))
-        using (var markFill = new SolidBrush(Theme.Panel2))
+        using (var markPen = new Pen(Theme.Line))
         {
-            g.FillPath(markFill, markPath);
+            Fill.Vertical(g, markPath, markRect, BlendPanel2(0.10), Theme.Panel2);
+            g.DrawPath(markPen, markPath);
         }
 
         DrawFanGlyph(g, new RectangleF(
-            markRect.X + mark * 0.18f, markRect.Y + mark * 0.18f, mark * 0.64f, mark * 0.64f));
+            markRect.X + mark * 0.16f, markRect.Y + mark * 0.16f, mark * 0.68f, mark * 0.68f));
 
         // 品牌名 + 副标题
         int textX = (int)markRect.Right + Dpi.Px(_form, 10);
@@ -74,38 +75,85 @@ internal sealed class TitleBarChrome
         DrawButton(g, _closeRect, _hoverClose, true);
     }
 
-    /// <summary>三叶风扇符号。用 Bezier 画, 不依赖任何图标字体。</summary>
+    /// <summary>
+    /// 三叶风扇符号: 三片圆头叶片 + 外圈轨道弧 (两端各一个圆点) + 中心白点。
+    /// 形态对齐 assets/zephyr.ico, 用 Bezier/Arc 画, 不依赖任何图标字体。
+    ///
+    /// 叶片用"从中心放射的圆头楔形"而不是细长三角: 小尺寸下三角会退化成三条线,
+    /// 看着像故障图标。圆头在 18px 宽时仍能读出"这是风扇"。
+    /// </summary>
     private static void DrawFanGlyph(Graphics g, RectangleF box)
     {
         float cx = box.X + box.Width / 2f;
         float cy = box.Y + box.Height / 2f;
         float r = box.Width / 2f;
 
-        using var brush = new SolidBrush(Theme.Accent);
+        // 外圈轨道: 只画约 300 度, 留一个缺口, 两端各一个圆点
+        float orbit = r * 1.02f;
+        var orbitRect = new RectangleF(cx - orbit, cy - orbit, orbit * 2f, orbit * 2f);
+        using (var orbitPen = new Pen(Color.FromArgb(150, Theme.Accent), Math.Max(1f, r * 0.12f)))
+        {
+            g.DrawArc(orbitPen, orbitRect, -58f, 296f);
+        }
 
+        using (var nodeBrush = new SolidBrush(Color.FromArgb(170, Theme.Accent)))
+        {
+            float node = Math.Max(1.1f, r * 0.15f);
+            // 缺口两端 (与上面的 -58/296 对应)
+            foreach (float deg in new[] { -58f, 238f })
+            {
+                double a = deg * Math.PI / 180.0;
+                float nx = cx + (float)Math.Cos(a) * orbit;
+                float ny = cy + (float)Math.Sin(a) * orbit;
+                g.FillEllipse(nodeBrush, nx - node, ny - node, node * 2f, node * 2f);
+            }
+        }
+
+        // 三片叶片: 每片是一个从中心向外的圆头楔形
+        float bladeR = r * 0.80f;
+        using var brush = new SolidBrush(Theme.Accent);
         for (int i = 0; i < 3; i++)
         {
             float start = -90f + i * 120f;
-            double a0 = start * Math.PI / 180.0;
-            double a1 = (start + 120f) * Math.PI / 180.0;
-
-            var p0 = new PointF(cx, cy);
-            var p1 = new PointF(
-                (float)(cx + Math.Cos(a0) * r * 1.05),
-                (float)(cy + Math.Sin(a0) * r * 1.05));
-            var p2 = new PointF(
-                (float)(cx + Math.Cos(a1) * r * 1.05),
-                (float)(cy + Math.Sin(a1) * r * 1.05));
-
             using var path = new GraphicsPath();
-            path.AddBezier(p0, p1, p2, p0);
+            // 从中心附近出发, 沿一条贝塞尔鼓到外缘, 再沿另一条贝塞尔收回中心
+            float a0 = (start - 30f) * (float)Math.PI / 180f;
+            float a1 = (start + 30f) * (float)Math.PI / 180f;
+            var p0 = new PointF(cx + (float)Math.Cos(a0) * bladeR * 0.30f,
+                                cy + (float)Math.Sin(a0) * bladeR * 0.30f);
+            var p3 = new PointF(cx + (float)Math.Cos(a1) * bladeR * 0.30f,
+                                cy + (float)Math.Sin(a1) * bladeR * 0.30f);
+
+            var c1 = new PointF(cx + (float)Math.Cos(a0 - 18f * Math.PI / 180f) * bladeR,
+                                cy + (float)Math.Sin(a0 - 18f * Math.PI / 180f) * bladeR);
+            var c2 = new PointF(cx + (float)Math.Cos(a1 + 18f * Math.PI / 180f) * bladeR,
+                                cy + (float)Math.Sin(a1 + 18f * Math.PI / 180f) * bladeR);
+
+            path.AddBezier(p0, c1, c2, p3);
+            path.AddLine(p3, p0);
             path.CloseFigure();
             g.FillPath(brush, path);
         }
 
-        float hub = Math.Max(1.5f, r * 0.26f);
+        // 中心: 深色环 + 白点, 与图标一致 (白点让叶片在深底上不糊成一团)
+        float hubOuter = Math.Max(1.6f, r * 0.30f);
+        using (var hubBg = new SolidBrush(Theme.WinBg))
+            g.FillEllipse(hubBg, cx - hubOuter, cy - hubOuter, hubOuter * 2f, hubOuter * 2f);
+
+        float hub = Math.Max(1.1f, r * 0.22f);
         using var hubBrush = new SolidBrush(Theme.Text1);
-        g.FillEllipse(hubBrush, cx - hub, cy - hub, hub * 2, hub * 2);
+        g.FillEllipse(hubBrush, cx - hub, cy - hub, hub * 2f, hub * 2f);
+    }
+
+    /// <summary>把 Panel2 往白里提一点, 作为品牌块的顶部色。</summary>
+    private static Color BlendPanel2(double amount)
+    {
+        amount = Math.Clamp(amount, 0d, 1d);
+        Color b = Theme.Panel2;
+        return Color.FromArgb(
+            (int)Math.Round(b.R + (255 - b.R) * amount),
+            (int)Math.Round(b.G + (255 - b.G) * amount),
+            (int)Math.Round(b.B + (255 - b.B) * amount));
     }
 
     private void DrawButton(Graphics g, Rectangle rect, bool hover, bool isClose)
