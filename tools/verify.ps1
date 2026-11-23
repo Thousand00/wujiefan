@@ -22,7 +22,7 @@
     构建配置，默认 Release。
 
 .PARAMETER MinTestCount
-    单测用例数下限，默认 254（252 之上补了「迁移失败必须留下可观测痕迹」的正反两条）。
+    单测用例数下限，默认 257（254 之上补了 EcMutex 的「销毁后取用」与「半持有回滚」、迁移失败信号不被 Save 冲掉三条）。
     只做下界断言，用例增多不会误报；真正的门禁是失败数 = 0。
 
 .PARAMETER SkipBuild
@@ -58,7 +58,7 @@
 [CmdletBinding()]
 param(
     [string]$Configuration = 'Release',
-    [int]$MinTestCount = 254,
+    [int]$MinTestCount = 257,
     [switch]$SkipBuild,
     [switch]$SkipTest,
     [switch]$SkipSmoke,

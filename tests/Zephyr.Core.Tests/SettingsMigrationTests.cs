@@ -175,6 +175,51 @@ public class SettingsMigrationTests
     }
 
     [Fact]
+    public void 迁移失败的信号不会被之后一次Save冲掉()
+    {
+        // 这个信号唯一的作用就是"撑到用户看见"。而 Load() 之后程序自己会 Save 好几次
+        // (切风扇模式、开机自启改动、托盘操作), 只要其中任何一次把它清掉,
+        // 用户就永远看不到"旧设置没搬过来"。
+        //
+        // 现在它是 static 字段, JsonSerializer 默认不序列化 static 成员, 所以 Save 碰不到它。
+        // 这条断言钉住的就是这个"靠不序列化才成立"的巧合 —— 哪天有人给它加上
+        // [JsonProperty] 让它一起落盘, Save 的读写循环就会把它覆盖成 null。
+        RealSettingsFileFixture.DeleteSettings();
+        RealSettingsFileFixture.WriteLegacySettings(
+            "{\n" +
+            "  \"EmergencyTemperatureC\": 96\n" +
+            "}");
+        Directory.CreateDirectory(RealSettingsFileFixture.SettingsPath);
+
+        try
+        {
+            AppSettings s = AppSettings.Load();
+            Assert.NotNull(AppSettings.LoadMigrateError);
+
+            string reason = AppSettings.LoadMigrateError!;
+
+            // 拆掉制造失败的那个同名目录, 让后面的 Save 能真正写下去。
+            // 现实里也是这个顺序: 迁移那一刻因为某种原因没写成, 之后程序照常跑、照常保存。
+            Directory.Delete(RealSettingsFileFixture.SettingsPath, recursive: true);
+
+            // 成功的一次 Save: 这条路以前会清掉 LastError, 现在要确认它没顺手清掉这个。
+            Assert.True(s.Save(), AppSettings.LastError ?? "");
+
+            Assert.Equal(reason, AppSettings.LoadMigrateError);
+
+            // 落盘内容里也不能出现它 —— 一旦写进配置文件, 下次 Load 读到的就是
+            // 上一次的旧错误, 用户会以为这次也失败了。
+            string json = File.ReadAllText(RealSettingsFileFixture.SettingsPath);
+            Assert.DoesNotContain("LoadMigrateError", json);
+        }
+        finally
+        {
+            if (Directory.Exists(RealSettingsFileFixture.SettingsPath))
+                Directory.Delete(RealSettingsFileFixture.SettingsPath, recursive: true);
+        }
+    }
+
+    [Fact]
     public void 迁移成功之后不该留下失败痕迹()
     {
         // 反向确认: 上一条的断言不是因为 LoadMigrateError 永远非空才通过的。

@@ -205,4 +205,61 @@ public class EcMutexTests
 
         Assert.True(TryAcquireElsewhere(names, 1000));
     }
+
+    [Fact]
+    public void 销毁之后再取用_返回false()
+    {
+        // Acquire 开头那句 `if (_disposed) return false;` 是 Dispose 与另一个线程
+        // 之间的唯一挡板。删掉它, 那个线程会去 Wait 一批已经 CloseHandle 的句柄 ——
+        // 轻则靠运气返回 false, 重则拿一个已失效的句柄进临界区。
+        string[] names = UniqueNames();
+
+        var mutex = new EcMutex(names);
+        mutex.Dispose();
+
+        Assert.False(mutex.Acquire(100));
+
+        // 重复 Dispose 也必须安全: 退出路径上 Dispose 会被调两次。
+        mutex.Dispose();
+        Assert.False(mutex.Acquire(100));
+    }
+
+    [Fact]
+    public void 拿不全时不能留下半持有的锁()
+    {
+        // 两把锁里只拿到第一把的情形。早先的实现就在这里返回 false 却留着第一把,
+        // 调用方据此跳过 Release, 于是 Global\Access_ISABUS 被本进程长期占住 ——
+        // HWiNFO / LHM 从此读不到 EC, 而本程序一切正常, 没有任何日志指向这里。
+        string[] names = UniqueNames();
+        string[] onlyFirst = { names[0] };
+
+        // 让另一个线程独占第二把锁, 本次 Acquire 就必然"拿到第一把、拿不到第二把"。
+        using var blockerReady = new ManualResetEventSlim();
+        var blocker = new Thread(() =>
+        {
+            using var other = new EcMutex(new[] { names[1] });
+            if (!other.Acquire(5000)) return;
+
+            blockerReady.Set();
+            Thread.Sleep(800);   // 撑住, 让下面那次 Acquire 超时
+            other.Release();
+        })
+        {
+            IsBackground = true,
+        };
+
+        blocker.Start();
+        Assert.True(blockerReady.Wait(TimeSpan.FromSeconds(5)), "竞争线程没能拿到第二把锁。");
+
+        using (var mutex = new EcMutex(names))
+        {
+            Assert.False(mutex.Acquire(150));   // 第二把拿不到
+
+            // 关键断言: 第一把必须已经还回去了。回滚被删掉的话它仍归本线程,
+            // 下面这个"别的线程来拿"就会失败。
+            Assert.True(TryAcquireElsewhere(onlyFirst, 1000));
+        }
+
+        Assert.True(blocker.Join(TimeSpan.FromSeconds(5)), "竞争线程没有及时结束。");
+    }
 }
