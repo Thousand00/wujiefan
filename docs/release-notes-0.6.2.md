@@ -96,10 +96,8 @@ catch (Exception ex) { ... }
 
 | 文件 | 大小 | SHA-256 |
 | --- | --- | --- |
-| `Zephyr-0.6.2-win-x64.zip` | 见下 | 见下 |
-| `Zephyr-0.6.2-win-x64-portable.zip` | 见下 | 见下 |
-
-（打包后回填。）
+| `Zephyr-0.6.2-win-x64.zip` | 275,814 B | `4ae0707e17ab4d8f23e15d414f8ca511052f8bed671079822ad2dc7287d3dcdc` |
+| `Zephyr-0.6.2-win-x64-portable.zip` | 98,332,331 B | `02247574867b18e00cdc81149b6f24187b109a83fa26e3a1bdc27f3ac4d32f96` |
 
 ## 已知问题
 

@@ -67,14 +67,18 @@ public sealed class RealSettingsFileFixture : IDisposable
         DeleteLegacySettings();
     }
 
-    public static string ConfigDir =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Zephyr");
+    public static string ConfigDir => RuntimeIdentity.DataDirectory;
 
     public static string SettingsPath => Path.Combine(ConfigDir, "settings.json");
 
-    /// <summary>改名前的配置目录。迁移逻辑的输入源, 也是"必须隔离"的第二个位置。</summary>
-    public static string LegacyConfigDir =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WujieFan");
+    /// <summary>
+    /// 改名前的配置目录。迁移逻辑的输入源, 也是"必须隔离"的第二个位置。
+    ///
+    /// 这里刻意走 <see cref="RuntimeIdentity.LegacyDataDirectory"/> 而不是写死字符串:
+    /// 夹具要隔离的必须是**产品代码真正会去读的那个路径**, 两边各写一份就迟早会不一致,
+    /// 而不一致的后果是测试悄悄开始读写用户真实配置 (以前就丢过一次)。
+    /// </summary>
+    public static string LegacyConfigDir => RuntimeIdentity.LegacyDataDirectory;
 
     public static string LegacySettingsPath => Path.Combine(LegacyConfigDir, "settings.json");
 
