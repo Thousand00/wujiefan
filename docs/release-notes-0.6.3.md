@@ -1,6 +1,6 @@
 # Zephyr 0.6.3 发布说明
 
-第五轮全量审计的结论是「新发现实缺陷 0 个，代码已收敛」。这一版只动了一处：切模式时白读的两个寄存器。
+这一版只动了一处：切风扇模式时白读的两个寄存器。行为没有任何变化，少的是两笔无用的 I2C 读。
 
 ## 这一版改了什么
 
@@ -27,53 +27,7 @@ TryWrite(EcRegisters.ModeFlag2, EcRegisters.ModeAuto, problems);
 private readonly record struct ModeSnapshot(int Pwm1, int Pwm2)
 ```
 
-行为没有任何变化：回滚照旧把标志写 `ModeAuto`、照旧还原两个手动 PWM 的原值。少的是两笔无用的读。
-
-## 审计报告里我不同意的四条
-
-这份报告质量很高，但核对代码后有四处与实现不符。**没有照着改**，因为照做会引入问题。
-
-### 1. 报告说 `HasData` 是「完全孤儿属性，tests/ 也零引用」
-
-实际有 3 条测试在用它：
-
-| 文件 | 行 | 断言 |
-| --- | --- | --- |
-| `tests/Zephyr.Core.Tests/FanReaderSamplingTests.cs` | 30 | `Assert.True(s.HasData)` |
-| 同上 | 52 | `Assert.True(s.HasData);   // 温度无效不影响风扇读数` |
-| 同上 | 119 | `Assert.False(s.HasData)` |
-
-删掉 `HasData` 这三条测试会直接编译失败。它也不是纯孤儿 —— 它是「这次采样到底有没有有效数据」的语义出口，测试靠它判断。
-
-### 2. 报告说 `RuntimeIdentity.cs` 的「只能用 System.*」约束「只在 AGENTS.md 写了」
-
-文件头从 v0.6.0 起就有：
-
-> 这个文件会被主程序、Core 与启动器三处链接编译（见两个 csproj 的 `<Compile Include>`），因为启动器为了缩小攻击面刻意不引用 Core。因此这里不能用任何需要引用 Core 其他类型的写法。
-
-约束一直在源码里，`AGENTS.md` 是后来补的第二份。
-
-### 3. 报告说 `AppSettings.Load()` 里有 `Interlocked.Exchange(ref _loadLockTaken, 1)` 做「跨进程互斥」
-
-不存在这个字段 —— 全仓 grep `_loadLockTaken` 零命中，`AppSettings.cs` 里 `Load()` 之外没有任何 `Interlocked` / `lock` / `Mutex`。
-
-而且即使有也不成立：`Interlocked` 是**进程内**原语，做不到跨进程互斥。
-
-### 4. 报告说 `QueryState` 的四态叫 `NotInstalled / Inconclusive / Installed / Foreign`
-
-实际是：
-
-```csharp
-public enum TaskState
-{
-    Unknown,   // 没查成 (schtasks 超时/起不来)
-    Absent,    // 确实没有这个任务
-    Ours,      // 任务存在且属于本程序
-    Foreign,   // 任务存在但命令不是我们的
-}
-```
-
-名字和语义都对不上，尤其 `Unknown` 与 `Inconclusive` 的区别报告没抓到 —— 代码里 `Unknown` 是「任何结论都不能基于这个状态」，`Absent` 才是「确实没有」。
+行为没有任何变化：回滚照旧把标志写 `ModeAuto`、照旧还原两个手动 PWM 的原值。写序（先 PWM 后标志）与回滚目标值都没动。
 
 ## 验证
 
@@ -84,6 +38,7 @@ public enum TaskState
 | `dotnet test` | 254 / 254 通过 |
 | `tools/verify.ps1` | 5/5 全过，EXITCODE=0 |
 | XML 契约 | `ZEPHYR_FAN1=1111` / `ZEPHYR_FAN2=2222` / `ZEPHYR_CPUT=33`（230 字节） |
+| 实机启动 | 进程存活、`ui.log` 零新增、热键仍占用、设置完好、AIDA 供数正常 |
 
 ### 新断言做了变异验证
 
@@ -97,11 +52,11 @@ Expected: 0
 Actual:   2
 ```
 
-还原后 254 条全过。这条断言有牙。
+还原后 254 条全过。这条断言能拦住回退。
 
 ## 未验证
 
-- **没有上实机切模式**。改动只删了两次读，写序与回滚目标值都没动，单测覆盖了写序（`fake.Ops` 的时序断言）与回滚路径，但真实的 EC 交互没跑。
+- **没有上实机切模式**。改动只删了两次读，单测覆盖了写序（`fake.Ops` 的时序断言）与回滚路径，但真实的 EC 交互没跑。
 - 没有测「I2C 往返省下来到底快了多少」—— 两次读在 300 毫秒锁超时面前可以忽略，这里改的是纯粹的浪费，不是性能瓶颈。
 
 ## 下载
