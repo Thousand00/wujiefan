@@ -62,6 +62,8 @@ git rev-parse HEAD
 - 机型校验失败时 `force` 只解锁观察（只读），不解锁控制。
 - 别改 `AIDA64_SensorValues` 共享内存名与 EC 寄存器地址 —— 是外部契约。
 - 别改 `SupportedHardware` 里的 `"WUJIE 14"` / `"WUJIE 14+"` —— 是这块主板的产品名，与产品改名无关。
+- 别动 `AutoStartManager.Run` 里「先异步起两条读流 → 再 `WaitForExit(15000)`」的顺序。同步 `CopyTo` 会一直读到 EOF，子进程卡住且不关 stdout 时它永不返回，下面那个超时根本没机会执行，调用方（UI 线程）会无限卡住 —— 超时形同虚设。那段 12 行注释就是这次故障的复现说明。
+- `AppSettings.LoadMigrateError` / `LoadMigrated` 这类「启动期一次性事实」必须留在 **static** 字段上。`JsonSerializer` 不序列化 static 成员（给它们加 `[JsonInclude]`、`[JsonPropertyName]` 或开 `IncludeFields` 都试过，都不行 —— 这点已实测确认），所以 `Save()` 的读写循环碰不到它们。**改成实例属性就会进 JSON**，`Save()` 之后被覆盖成 null，"旧设置没搬过来"这句提示用户再也看不到。
 
 ## 界面
 
