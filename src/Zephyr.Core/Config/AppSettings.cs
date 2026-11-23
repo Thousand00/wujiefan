@@ -107,7 +107,7 @@ public sealed class AppSettings
     private static string FilePath => Path.Combine(Dir, "settings.json");
 
     /// <summary>
-    /// 改名前的配置位置 (<c>%LOCALAPPDATA%\Zephyr\settings.json</c>)。
+    /// 改名前的配置位置 (<c>%LOCALAPPDATA%\WujieFan\settings.json</c>)。
     /// 只用于首次启动时把旧设置沿用过来: 不搬的话, 从 WujieFan 升到 Zephyr 的用户会发现
     /// 快捷键、过热阈值、RTSS 开关全部回到默认值 —— 表面上"能用", 实际是设置全丢了。
     /// </summary>
@@ -135,6 +135,14 @@ public sealed class AppSettings
 
     /// <summary>本次 Load 的提示信息 (降级原因与归一化说明都可能在里面); 无话可说时为 null。</summary>
     public static string? LoadWarning { get; private set; }
+
+    /// <summary>
+    /// 本次 Load 尝试沿用改名前的旧配置但失败了 (权限 / 磁盘 / 文件被独占)。
+    /// 与 <see cref="LastError"/> 分开是必要的: LastError 会被后续任何一次 Save 覆盖,
+    /// 而这条要说的是"你的旧设置没搬过来", 属于启动期一次性事实, 界面要单独说一句。
+    /// 为 null 表示没有迁移失败 (含"根本没有旧配置可迁")。
+    /// </summary>
+    public static string? LoadMigrateError { get; private set; }
 
     /// <summary>
     /// 本次 Load 是否从改名前的旧目录沿用了配置。界面据此提示一次
@@ -166,6 +174,7 @@ public sealed class AppSettings
         LoadNormalized = false;
         LoadWarning = null;
         LoadMigrated = false;
+        LoadMigrateError = null;
         LastError = null;
 
         // 改名后第一次启动: 新目录还没有配置文件, 但旧目录有, 就沿用过来。
@@ -450,8 +459,16 @@ public sealed class AppSettings
         }
         catch (Exception ex)
         {
+            // 两个实例同时启动时会撞上同一次迁移: 双方都通过上面的 File.Exists 检查,
+            // 只有先到的那个 Copy 成功, 后到的抛 "文件已存在"。这不是失败 ——
+            // 配置文件现在就在位 (先到者写的), 后续读取照常。所以只在文件仍不存在时记录,
+            // 否则每次开机自启 + 手动点快捷方式都会在日志里留一条假故障。
+            if (File.Exists(FilePath))
+                return;
+
             // 迁移失败不该影响启动: 下一步读不到 FilePath 时会走安全默认。
             LastError = ex.Message;
+            LoadMigrateError = ex.Message;
         }
     }
 

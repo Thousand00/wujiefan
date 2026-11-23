@@ -57,6 +57,9 @@ public sealed class MainForm : Form
     /// <summary>启动时查到了改名前的旧计划任务, 要在状态提示里说一次。</summary>
     private bool _legacyTaskNotice;
 
+    /// <summary>启动时查到了改名前的旧版进程还在跑。它当下就在抢 EC 锁, 比旧任务更要紧。</summary>
+    private bool _legacyProcessNotice;
+
     /// <summary>窗口已进入销毁流程。休眠恢复回调可能晚到, 用它挡住。</summary>
     private bool _disposedUi;
 
@@ -405,6 +408,14 @@ public sealed class MainForm : Form
             _legacyTaskNotice = true;
         }
 
+        // 旧版进程还在跑: 两个版本的单实例互斥量不同名, 所以它们会同时活着抢 EC 锁。
+        // 这不是"以后可能出问题", 是当下风扇已经控制不了 —— 优先级高于旧任务。
+        if (AutoStartManager.LegacyProcessRunning())
+        {
+            UiLog("检测到改名前的旧版进程还在运行: " + RuntimeIdentity.LegacyProcessName + ".exe");
+            _legacyProcessNotice = true;
+        }
+
         _machineLabel.Text = DescribeMachine();
 
         // 打开设备内部已经按需建好共享内存, 这里不必再调一次。
@@ -444,12 +455,27 @@ public sealed class MainForm : Form
             SetStatus("已从旧版本沿用设置 (快捷键、过热保护、RTSS 开关都在)。", Theme.Text2);
             UiLog("AppSettings migrated from " + RuntimeIdentity.LegacyDataDirectoryName);
         }
+        else if (AppSettings.LoadMigrateError is { } migrateError)
+        {
+            // 旧配置在, 但没搬过来 —— 用户马上会发现快捷键与阈值全回默认。
+            // 不说的话他只会以为"新版本把我的设置弄丢了", 而真正的原因 (权限/磁盘/占用)
+            // 只躺在 LastError 里, 而 LastError 会被下一次 Save 冲掉。
+            SetStatus("旧版本的设置没能沿用过来, 本次按默认设置启动: " + migrateError, Theme.Warn);
+            UiLog("AppSettings migrate failed: " + migrateError);
+        }
 
         // 旧计划任务的提示放在设置提示之后: 它比"设置被归一化"更需要用户动手,
         // 但比"设置降级"轻 —— 降级意味着这次不接管风扇, 那才是必须先看到的。
         if (_legacyTaskNotice)
         {
             SetStatus("检测到旧的 WujieFan 开机任务, 请按 README 用一条命令删除, 否则开机时新旧版本会抢 EC。", Theme.Warn);
+        }
+
+        // 旧版进程比旧任务更急: 旧任务只是下次开机才起作用, 旧进程现在就在抢 EC 锁,
+        // 两条同时命中时优先说这条 —— 用户关掉旧进程之后, 下次启动才会只剩旧任务那条。
+        if (_legacyProcessNotice)
+        {
+            SetStatus("检测到旧的 WujieFan 进程还在运行, 两个版本会抢 EC 锁导致都控制不了风扇。请先退出旧版。", Theme.Warn);
         }
 
         // 全局热键注册在这里, 有两个原因:

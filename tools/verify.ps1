@@ -22,7 +22,7 @@
     构建配置，默认 Release。
 
 .PARAMETER MinTestCount
-    单测用例数下限，默认 252（在 247 基础上补了改名后旧配置目录迁移的 5 条）。
+    单测用例数下限，默认 254（252 之上补了「迁移失败必须留下可观测痕迹」的正反两条）。
     只做下界断言，用例增多不会误报；真正的门禁是失败数 = 0。
 
 .PARAMETER SkipBuild
@@ -58,7 +58,7 @@
 [CmdletBinding()]
 param(
     [string]$Configuration = 'Release',
-    [int]$MinTestCount = 252,
+    [int]$MinTestCount = 254,
     [switch]$SkipBuild,
     [switch]$SkipTest,
     [switch]$SkipSmoke,

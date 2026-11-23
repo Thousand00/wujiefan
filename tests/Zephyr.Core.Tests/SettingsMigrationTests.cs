@@ -134,4 +134,59 @@ public class SettingsMigrationTests
         Assert.False(AppSettings.LoadMigrated);
         Assert.Equal(96, second.EmergencyTemperatureC);
     }
+
+    [Fact]
+    public void 迁移失败必须留下可观测的痕迹()
+    {
+        // 旧配置在、新位置写不进去 —— 用户看到的是"快捷键和阈值全回默认了"。
+        // 这个失败以前只写 LastError, 而 LastError 会被之后任何一次 Save 覆盖掉,
+        // 于是界面上什么都看不到, 用户只能以为新版本把设置弄丢了。
+        // 所以这里钉住: 迁移失败要有一个不会被 Save 冲掉的独立信号。
+        //
+        // 制造失败的手法: 在新配置的位置放一个**同名目录**。File.Exists 对目录返回 false
+        // (于是走到复制那一步), 而 File.Copy 往目录路径写会抛异常。
+        RealSettingsFileFixture.DeleteSettings();
+        RealSettingsFileFixture.WriteLegacySettings(
+            "{\n" +
+            "  \"EmergencyTemperatureC\": 96\n" +
+            "}");
+        Directory.CreateDirectory(RealSettingsFileFixture.SettingsPath);
+
+        try
+        {
+            AppSettings s = AppSettings.Load();
+
+            Assert.NotNull(AppSettings.LoadMigrateError);
+            Assert.False(AppSettings.LoadMigrated);
+
+            // 拿不到旧配置就等于"没有配置文件": 回到安全默认。
+            // 注意这里**不是降级** —— 降级的含义是"文件在那儿但读不出来, 所以不敢接管风扇";
+            // 而"压根没有配置"本来就是全新安装的正常状态, 安全默认(自动模式)本身已经是安全态。
+            // 用户可见性由 LoadMigrateError 单独承担。
+            Assert.Equal(EcRegisters.EmergencyTemperatureC, s.EmergencyTemperatureC);
+            Assert.Equal(EcRegisters.EmergencyHoldSamples, s.EmergencyHoldSamples);
+            Assert.False(AppSettings.LoadDegraded);
+        }
+        finally
+        {
+            if (Directory.Exists(RealSettingsFileFixture.SettingsPath))
+                Directory.Delete(RealSettingsFileFixture.SettingsPath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void 迁移成功之后不该留下失败痕迹()
+    {
+        // 反向确认: 上一条的断言不是因为 LoadMigrateError 永远非空才通过的。
+        RealSettingsFileFixture.DeleteSettings();
+        RealSettingsFileFixture.WriteLegacySettings(
+            "{\n" +
+            "  \"EmergencyTemperatureC\": 95\n" +
+            "}");
+
+        AppSettings.Load();
+
+        Assert.True(AppSettings.LoadMigrated);
+        Assert.Null(AppSettings.LoadMigrateError);
+    }
 }

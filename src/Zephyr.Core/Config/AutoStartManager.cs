@@ -121,6 +121,32 @@ public sealed class AutoStartManager
     }
 
     /// <summary>
+    /// 改名前的旧版进程 (`WujieFan.exe`) 是否还在运行。
+    ///
+    /// 与 <see cref="LegacyTaskPresent"/> 是两个不同的坑, 必须分开查:
+    ///   · 旧**计划任务**在 —— 下次开机会把旧版拉起来;
+    ///   · 旧**进程**在 —— 现在就在抢 EC 互斥量, 用户当下就会看到"EC 正被占用"。
+    ///
+    /// 两个版本的单实例互斥量不同名 (`Global\Zephyr_SingleInstance` 与
+    /// `Global\WujieFan_SingleInstance`), 所以手动装新版本而旧版没关时它们会**同时活着**,
+    /// 谁也拿不到 EC 锁, 结果是两个版本都控制不了风扇。这里只检测, 不替用户结束进程:
+    /// 结束别人的进程属于改动用户系统, 而且旧版是提权进程, 普通权限也杀不掉。
+    ///
+    /// 查不到进程列表时返回 false —— 不能因为一次枚举失败就去惊吓用户。
+    /// </summary>
+    public static bool LegacyProcessRunning()
+    {
+        try
+        {
+            return Process.GetProcessesByName(RuntimeIdentity.LegacyProcessName).Length > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// 现有任务是否已经符合当前版本的要求。用来避免每次启动都跑一遍 schtasks
     /// 重写 —— 用户没改过配置就不该动系统。读不到任务时返回 false, 让调用方走重写路径兜底。
     ///

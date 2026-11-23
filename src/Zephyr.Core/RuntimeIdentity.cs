@@ -47,6 +47,12 @@ public static class RuntimeIdentity
     /// <summary>改名之前用的计划任务名。只读它来判断"是否需要提示用户手动删除"。</summary>
     public const string LegacyTaskName = "WujieFan";
 
+    /// <summary>
+    /// 改名之前那个进程的名字 (不带 .exe)。两个版本的单实例互斥量不同名, 所以它们会并存。
+    /// 只用来检测"用户是不是还没关旧版", 不做任何终止操作。
+    /// </summary>
+    public const string LegacyProcessName = "WujieFan";
+
     /// <summary>启动器文件名。它必须和 Zephyr.exe 放在同一目录。</summary>
     public const string LauncherFileName = "ZephyrLauncher.exe";
 
