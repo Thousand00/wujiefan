@@ -1,0 +1,62 @@
+# Zephyr 仓库的协作约定
+
+给后续接手的人（或 AI 代理）的硬性约束。改代码前先读完这一页。
+
+## 推送前必须开代理
+
+**`git push` / `gh release create` 之前，先确认 Watt Toolkit（进程名 `Steam++`）正在运行，并等 5 秒再推。**
+
+不开代理直接推会得到：
+
+```
+fatal: unable to access 'https://github.com/Thousand00/zephyr-fan.git/':
+Recv failure: Connection was reset
+```
+
+这是本机网络环境的问题，不是仓库或凭证的问题。代理起来之后同一台机器能正常推送。
+
+### 怎么判断"真的推上去了"
+
+`git push` 报成功不代表远端真的更新了，这种网络环境下它可能只成功了一半。
+**每次推送后都要核对远端 HEAD 与本地一致：**
+
+```bash
+git ls-remote origin master | cut -f1   # 应等于下面这行
+git rev-parse HEAD
+```
+
+两者不一致、或 `ls-remote` 返回空，就等代理连通后重推。
+`gh release create` 同理：`gh release view` 在后台任务完成前会读到 `isDraft: true` 且资产不全，必须等任务结束后再确认一次。
+
+## 发版流程
+
+1. 只改 `Directory.Build.props` 里的 `<Version>` / `<FileVersion>` / `<AssemblyVersion>`（三处一起改，版本号只有这一个来源）。
+2. `pwsh -NoProfile -File tools/make-release.ps1 -Version <版本>` —— 脚本自带 `tools/verify.ps1 -FailOnSkip` 门禁，verify 不过不会打包。
+3. 打包后**必须实机启动一次**：`dotnet build` 通过 + 单测全绿碰不到启动期异常（0.5.3 就因此发了个启动即崩的包，抛 `Win32Exception (1410) 类已存在`）。
+4. 装到 `E:\tools\Zephyr`，跑 `ZephyrLauncher.exe --tray`，确认进程存活、`%LOCALAPPDATA%\Zephyr\ui.log` 无新增异常。
+5. 打 tag → 推 tag → `gh release create` → 核对资产 digest 与本地 sha256 一致。
+6. 清理 `dist` 里上一版的 zip 与临时目录。
+
+## 测试与构建
+
+- `dotnet test` 的 `--artifacts-path` **必须指向 `%TEMP%` 下的随机目录**。指到工作区里会让 testhost 崩在
+  `ProcessManager.OpenProcess → EnsureWatchingForExit`（`Win32Exception (5) 拒绝访问`）。
+- 跑 `tools/verify.ps1` 时 `TMP` / `TEMP` 也必须是 `%TEMP%` 下的有效目录；`unset TMP TEMP` 会报
+  `无法将自变量绑定到参数 'Path'，因为它为 null`。
+- `tools/verify.ps1` 与 `tools/make-release.ps1` 带 UTF-8 **BOM**，编辑后必须还原，否则 Windows PowerShell 5.1 按 GBK 解析中文注释。
+- 本机 bash 没有 `unzip` / `perl` / `python3`（`python` 可用，且带 PIL），需要时用 pwsh 或 python。
+
+## 安全红线（不要为了"更顺手"而放松）
+
+- 强冷模式**只升不降**；PWM 超过 184 不是更快而是停转。
+- 写 EC 走 `PwmGuard`，不要新增绕过它的写入口。
+- 过热保护与读失败交还自动的判据不要动。
+- 机型校验失败时 `force` 只解锁观察（只读），不解锁控制。
+- 别改 `AIDA64_SensorValues` 共享内存名与 EC 寄存器地址 —— 是外部契约。
+- 别改 `SupportedHardware` 里的 `"WUJIE 14"` / `"WUJIE 14+"` —— 是这块主板的产品名，与产品改名无关。
+
+## 界面
+
+- 全自绘：`FormBorderStyle.None` + `Dpi.Px()` 手算，PerMonitorV2。
+- 色值/尺寸只从 `Theme.cs` 取，不要在控件里写死颜色。
+- 改完 UI 用反射渲染截图核对（`DrawToBitmap`），不要靠"看起来应该对"。

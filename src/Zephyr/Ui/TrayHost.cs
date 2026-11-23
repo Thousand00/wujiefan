@@ -45,7 +45,7 @@ internal sealed class TrayHost : IDisposable
         {
             _icon = new NotifyIcon
             {
-                Icon = LoadAppIcon(32),
+                Icon = LoadAppIcon(),
                 Text = "Zephyr - 无界14+ 风扇转速",
                 Visible = true,
                 ContextMenuStrip = BuildMenu(onRestore, onRestoreAuto, onRetryHardware, onSettings, onExit),
@@ -186,33 +186,15 @@ internal sealed class TrayHost : IDisposable
         return image;
     }
 
-    /// <summary>从嵌入资源取出多尺寸 .ico, 按需要的尺寸建图标 (托盘与任务栏尺寸不同)。</summary>
-    private static Icon LoadAppIcon(int size)
+    /// <summary>
+    /// 取托盘用的应用图标。
+    ///
+    /// 直接读 exe 自身的图标资源 (即 csproj 里 &lt;ApplicationIcon&gt; 写进 .rsrc 的那份),
+    /// 不再从托管嵌入资源里另取一份: 同一个 ico 被编进 exe 两遍, 托盘却只要 32px,
+    /// 白白让发布包翻倍。ExtractAssociatedIcon 拿到的就是 .rsrc 里最小那档, 正好够托盘用。
+    /// </summary>
+    private static Icon LoadAppIcon()
     {
-        var asm = typeof(TrayHost).Assembly;
-        foreach (string name in asm.GetManifestResourceNames())
-        {
-            if (!name.EndsWith("zephyr.ico", StringComparison.OrdinalIgnoreCase)) continue;
-
-            try
-            {
-                using Stream? s = asm.GetManifestResourceStream(name);
-                if (s is null) continue;
-
-                using var buffer = new MemoryStream();
-                s.CopyTo(buffer);
-                buffer.Position = 0;
-                return new Icon(buffer, size, size);
-            }
-            catch
-            {
-                // 这一档尺寸在 .ico 里不存在时会抛异常; 不能因此让整个窗口起不来。
-                continue;
-            }
-        }
-
-        // 兜底: 没有嵌入资源就用 exe 自己的图标; 连这个都拿不到就用系统图标。
-        //
         // 系统图标必须 Clone 一份再交出去: SystemIcons.Application 是进程内共享的
         // 静态实例, 上面 Dispose() 会无条件释放拿到的 Icon —— 直接返回它就会把
         // 一个属于 .NET 的共享句柄销毁掉, 之后再要用系统图标的地方就会拿到失效句柄。
@@ -223,7 +205,7 @@ internal sealed class TrayHost : IDisposable
         }
         catch
         {
-            // 拿不到 exe 图标不是什么大事, 落到下面的系统图标。
+            // 拿不到 exe 图标不是什么大事, 落到系统图标。
         }
 
         return (Icon)SystemIcons.Application.Clone();

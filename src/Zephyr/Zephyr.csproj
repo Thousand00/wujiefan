@@ -29,8 +29,13 @@
     <ProjectReference Include="..\Zephyr.Core\Zephyr.Core.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <EmbeddedResource Include="..\..\assets\zephyr.ico" LogicalName="Zephyr.zephyr.ico" />
-  </ItemGroup>
+  <!--
+    这里刻意不再把 zephyr.ico 作为 EmbeddedResource 编进来。
+    <ApplicationIcon> (上面那项) 已经把整份 ico 写进 Win32 资源段 .rsrc, 托盘再嵌一份
+    等于同一个文件在 exe 里存两遍: 0.6.1 换新图标后 ico 从 11 万字节涨到 17 万字节
+    (256 那档是 60 KB 的真彩 PNG, zip 再压不动), 光这一项就让框架包从 262 KB 涨到 527 KB。
+    托盘只要 32px, 从 exe 自身的图标资源取就够, 见 TrayHost.LoadAppIcon。
+  -->
+
 
 </Project>
