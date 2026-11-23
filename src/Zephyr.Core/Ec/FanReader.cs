@@ -462,14 +462,19 @@ public sealed class FanReader : IDisposable
         catch (Exception ex) { problems.Add($"还原 0x{address:X4} 失败: {ex.Message}"); }
     }
 
-    /// <summary>写入前四个寄存器 (两个手动 PWM、两个模式标志) 的取值。</summary>
-    private readonly record struct ModeSnapshot(int Pwm1, int Pwm2, int Flag1, int Flag2)
+    /// <summary>
+    /// 写入前两个手动 PWM 寄存器的取值。
+    ///
+    /// 这里只存值得还原的东西。两个模式标志不用存: 回滚一律写成
+    /// <see cref="EcRegisters.ModeAuto"/> 常量 (见 <see cref="RecoverToAuto"/>) ——
+    /// 目标固定是自动, 读回来的旧标志没有用处。早先的快照也读了标志,
+    /// 等于每次切模式多跑两次 I2C, 却一次都没用过。
+    /// </summary>
+    private readonly record struct ModeSnapshot(int Pwm1, int Pwm2)
     {
         public static ModeSnapshot Capture(IEcTransport ec) => new(
             ec.Read(EcRegisters.ManualPwm1),
-            ec.Read(EcRegisters.ManualPwm2),
-            ec.Read(EcRegisters.ModeFlag1),
-            ec.Read(EcRegisters.ModeFlag2));
+            ec.Read(EcRegisters.ManualPwm2));
     }
 
     /// <summary>模式的中文说明, 界面和日志共用。</summary>

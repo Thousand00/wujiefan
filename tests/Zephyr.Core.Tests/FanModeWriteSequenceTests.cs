@@ -149,7 +149,7 @@ public class FanModeWriteSequenceTests
     }
 
     [Fact]
-    public void 写入前先抓四个寄存器的快照()
+    public void 写入前先抓手动PWM的快照()
     {
         var fake = IdleEc();
         using var reader = new FanReader(fake);
@@ -166,6 +166,7 @@ public class FanModeWriteSequenceTests
         // 那次读本来就在写入之后, 不能拿它当快照。
         int firstReadOfSnapshot = -1;
         int firstWrite = -1;
+        int flagReadsBeforeWrite = 0;
         for (int i = 0; i < fake.Ops.Count; i++)
         {
             var (isRead, address, _) = fake.Ops[i];
@@ -173,12 +174,18 @@ public class FanModeWriteSequenceTests
                 firstReadOfSnapshot = i;
             if (!isRead && firstWrite < 0)
                 firstWrite = i;
+            if (isRead && address is EcRegisters.ModeFlag1 or EcRegisters.ModeFlag2 && firstWrite < 0)
+                flagReadsBeforeWrite++;
         }
 
         Assert.True(firstReadOfSnapshot >= 0, "应该读过 ManualPwm1 / ManualPwm2");
         Assert.True(firstWrite >= 0, "应该发生过写入");
         Assert.True(firstReadOfSnapshot < firstWrite,
             $"快照读 (第 {firstReadOfSnapshot} 次操作) 必须早于第一次写入 (第 {firstWrite} 次操作)");
+
+        // 回滚一律把标志写成常量 ModeAuto, 所以快照不需要读标志。
+        // 那两次读不但没用, 还是每次切模式白白多出的 I2C 往返。
+        Assert.Equal(0, flagReadsBeforeWrite);
     }
 
     [Fact]
