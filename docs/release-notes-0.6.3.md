@@ -108,8 +108,8 @@ Actual:   2
 
 | 包 | 大小 | SHA-256 |
 | --- | --- | --- |
-| `Zephyr-0.6.3-win-x64.zip` | 待填 | 待填 |
-| `Zephyr-0.6.3-win-x64-portable.zip` | 待填 | 待填 |
+| `Zephyr-0.6.3-win-x64.zip` | 275,585 B | `53594f93f66d76553bad091502b8f380f8a00ea3edd009805e854e4f14403c8d` |
+| `Zephyr-0.6.3-win-x64-portable.zip` | 98,332,124 B | `f31693a5b8560d7db479d4aa113499daa46258e37a238c96ad4929b9dae8e4d4` |
 
 ## 已知问题
 
