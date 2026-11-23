@@ -60,3 +60,9 @@ git rev-parse HEAD
 - 全自绘：`FormBorderStyle.None` + `Dpi.Px()` 手算，PerMonitorV2。
 - 色值/尺寸只从 `Theme.cs` 取，不要在控件里写死颜色。
 - 改完 UI 用反射渲染截图核对（`DrawToBitmap`），不要靠"看起来应该对"。
+
+## src/Zephyr.Core/RuntimeIdentity.cs 的特殊约束
+
+这个文件被**链接编译**进启动器（`src/Zephyr.Launcher/Zephyr.Launcher.csproj` 里的 `<Compile Include="..\Zephyr.Core\RuntimeIdentity.cs" Link="RuntimeIdentity.cs" />`），因为启动器为了缩小攻击面刻意不引用整个 Core。
+
+所以在这个文件里**只能用 `System.*` 类型**，不能 `using Zephyr.Core.*`，也不能引用 Core 里的任何类型 —— 加了会让启动器整个编译不过，而主程序和 Core 都能过，很容易在本地看不出来。改完这个文件请务必构建一次 `Zephyr.Launcher`。
