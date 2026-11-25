@@ -59,8 +59,8 @@ RTSS 不再输出 `ZEPHYR_CPUT`、设置里没有温度阈值与连续次数。
 
 | 文件 | 大小 | SHA-256 |
 |---|---|---|
-| `Zephyr-0.7.0-win-x64.zip` | 见资产页 | 见资产页 |
-| `Zephyr-0.7.0-win-x64-portable.zip` | 见资产页 | 见资产页 |
+| `Zephyr-0.7.0-win-x64.zip` | 273,631 B | `c1cad7b455b68c0e54329da9ed86f6166ffc87b23402a05570e47d5139a0c7ab` |
+| `Zephyr-0.7.0-win-x64-portable.zip` | 98,326,359 B | `86ab9cfe49e6f7e8cdf34d3e791b00591bb4becd43157c60b4dc8ff69580e44f` |
 
 ## 已知问题
 
