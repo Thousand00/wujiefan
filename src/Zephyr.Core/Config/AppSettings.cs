@@ -261,11 +261,12 @@ public sealed class AppSettings
             }
         }
 
+        // 结构版本升级本身不算"被归一化": 没有字段越界, 用户也没有需要做什么。
+        // 早先这里跟着 changed = true, 于是每个从旧版升上来的用户第一次启动都会
+        // 看到"设置中有越界或过期的字段, 已归一化。" —— 那句话在纯升级时不是事实。
+        // 文件本身仍会在下一次 Save() 时写下新版本号 (Save 里统一写 CurrentSchemaVersion)。
         if (parsed.SchemaVersion < CurrentSchemaVersion)
-        {
             parsed.SchemaVersion = CurrentSchemaVersion;
-            changed = true;
-        }
 
         if (changed) AddWarning("设置中有越界或过期的字段, 已归一化。");
 

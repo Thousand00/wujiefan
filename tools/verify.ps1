@@ -22,7 +22,7 @@
     构建配置，默认 Release。
 
 .PARAMETER MinTestCount
-    单测用例数下限，默认 226（砍掉 CPU 温度与过热保护后删去 35 条、新增 4 条：不再读温度寄存器、关掉 PwmOut 时少读两个寄存器、默认仍读 PwmOut、争用失败标记 Transient）。
+    单测用例数下限，默认 227（删掉 35 条过热保护用例、补 5 条温度移除/瞬时失败/静默升版断言后的基线）。
     只做下界断言，用例增多不会误报；真正的门禁是失败数 = 0。
 
 .PARAMETER SkipBuild
@@ -58,7 +58,7 @@
 [CmdletBinding()]
 param(
     [string]$Configuration = 'Release',
-    [int]$MinTestCount = 226,
+    [int]$MinTestCount = 227,
     [switch]$SkipBuild,
     [switch]$SkipTest,
     [switch]$SkipSmoke,

@@ -168,6 +168,26 @@ public class AppSettingsTests
         Assert.Null(AppSettings.LastError);
         Assert.Equal("Ctrl+Shift+End", s.StrongCoolHotKey);
         Assert.Equal(AppSettings.CurrentSchemaVersion, s.SchemaVersion);
+        // 升版本号不是"有字段越界", 不该提示归一化。
+        Assert.False(AppSettings.LoadNormalized);
+        Assert.Null(AppSettings.LoadWarning);
+    }
+
+    [Fact]
+    public void 只是结构版本旧_不该报归一化()
+    {
+        // 0.6.x 的文件: 所有字段都合法, 只有 SchemaVersion 是 1。
+        // 升级之后没有任何东西需要用户处理, 所以不该冒出一句
+        // "设置中有越界或过期的字段" —— 那句话在纯升级时不是事实。
+        RealSettingsFileFixture.WriteSettings(
+            "{ \"SchemaVersion\": 1, \"PollIntervalMs\": 1000, \"FanMode\": 0 }");
+
+        AppSettings s = AppSettings.Load();
+
+        Assert.Equal(AppSettings.CurrentSchemaVersion, s.SchemaVersion);
+        Assert.False(AppSettings.LoadNormalized);
+        Assert.Null(AppSettings.LoadWarning);
+        Assert.False(AppSettings.LoadDegraded);
     }
 
     [Fact]
