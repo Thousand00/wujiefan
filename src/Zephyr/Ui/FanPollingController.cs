@@ -17,7 +17,6 @@ internal sealed class FanPollingController
     private readonly AppSettings _settings;
     private readonly DataCard _fan1Card;
     private readonly DataCard _fan2Card;
-    private readonly DataCard _tempCard;
     private readonly Action<string, Color> _setStatus;
     private readonly RtssPublisher _publisher;
     private readonly Func<FanModeController?> _mode;
@@ -48,12 +47,20 @@ internal sealed class FanPollingController
     /// <summary>退避上限。持续失败时每 30 秒试一次, 足够把设备接回来而不至于刷屏。</summary>
     private const int MaxOpenBackoffSeconds = 30;
 
+    /// <summary>一拍耗时的环形缓冲长度与上报间隔 (拍)。</summary>
+    private const int DurationWindow = 128;
+    private const int DurationReportEvery = 60;
+
+    private readonly double[] _durations = new double[DurationWindow];
+    private int _durationIndex;
+    private int _durationCount;
+    private int _pollsSinceReport;
+
     public FanPollingController(
         Form owner,
         AppSettings settings,
         DataCard fan1Card,
         DataCard fan2Card,
-        DataCard tempCard,
         RtssPublisher publisher,
         Func<FanModeController?> mode,
         Action<string, Color> setStatus)
@@ -62,7 +69,6 @@ internal sealed class FanPollingController
         _settings = settings;
         _fan1Card = fan1Card;
         _fan2Card = fan2Card;
-        _tempCard = tempCard;
         _publisher = publisher;
         _mode = mode;
         _setStatus = setStatus;
@@ -194,10 +200,6 @@ internal sealed class FanPollingController
     }
 
     /// <summary>
-    /// 一次轮询。定时器、启动、休眠恢复、托盘重试都会调它 —— 四种入口共用同一段逻辑,
-    /// 免得"启动时做了什么、恢复时少做了什么"这类差异慢慢长出来。
-    /// </summary>
-    /// <summary>
     /// 定时器回调的兜底壳: 任何未预期异常都不能从 Tick 里冒出去。
     /// WinForms 的定时器回调抛异常会走 Application.ThreadException,
     /// 在默认配置下就是"程序崩溃"的对话框 —— 每 1 秒一次的机会, 不值得赌。
@@ -205,6 +207,7 @@ internal sealed class FanPollingController
     /// </summary>
     private void RunPollSafely()
     {
+        long started = System.Diagnostics.Stopwatch.GetTimestamp();
         try
         {
             Poll();
@@ -214,8 +217,41 @@ internal sealed class FanPollingController
             _setStatus("采样时出现异常, 已跳过这一拍: " + ex.Message, Theme.Err);
             UiLog("Poll 异常: " + ex);
         }
+        finally
+        {
+            RecordPollDuration(System.Diagnostics.Stopwatch.GetElapsedTime(started));
+        }
     }
 
+    /// <summary>
+    /// 一拍耗时的滚动统计, 每 <see cref="DurationReportEvery"/> 拍往 ui.log 记一行 p50/p99。
+    ///
+    /// 为什么要记这个: 轮询跑在 UI 线程的定时器回调里, 一拍卡住就等于界面卡住。
+    /// 而耗时的大头不在本进程 —— 是等 EC 互斥量 (HWiNFO / LHM 占着时最坏 300 毫秒)
+    /// 和十几条内核驱动往返。没有这条日志就只能靠"用户说卡"来推断。
+    /// 只留最近 128 拍, 内存固定几 KB, 不影响稳态开销。
+    /// </summary>
+    private void RecordPollDuration(TimeSpan elapsed)
+    {
+        _durations[_durationIndex] = elapsed.TotalMilliseconds;
+        _durationIndex = (_durationIndex + 1) % _durations.Length;
+        if (_durationCount < _durations.Length) _durationCount++;
+
+        if (++_pollsSinceReport < DurationReportEvery) return;
+        _pollsSinceReport = 0;
+
+        if (_durationCount < 8) return;   // 样本太少, 分位数没有意义
+
+        double[] sorted = _durations.Take(_durationCount).OrderBy(v => v).ToArray();
+        double p50 = sorted[(int)(sorted.Length * 0.50)];
+        double p99 = sorted[Math.Min(sorted.Length - 1, (int)(sorted.Length * 0.99))];
+        UiLog($"轮询耗时 p50 {p50:F1}ms / p99 {p99:F1}ms / max {sorted[^1]:F1}ms ({sorted.Length} 拍)");
+    }
+
+    /// <summary>
+    /// 一次轮询。定时器、启动、休眠恢复、托盘重试都会调它 —— 四种入口共用同一段逻辑,
+    /// 免得"启动时做了什么、恢复时少做了什么"这类差异慢慢长出来。
+    /// </summary>
     public void Poll()
     {
         if (_reader is null || !_reader.IsOpen)
@@ -245,29 +281,42 @@ internal sealed class FanPollingController
             _nextOpenAttemptUtc = DateTime.MinValue;
         }
 
-        FanSample sample = _reader!.Read();
+        // 占空比不读: 界面和 RTSS 都不显示它, 每轮却要为它多跑 24 次驱动往返。
+        FanSample sample = _reader!.Read(readPwmOut: false);
 
         if (sample.Error is not null)
         {
+            // 锁被别人临时占着, 不是设备坏了。这种失败不该累加到"连续失败"里:
+            // 累加到 5 次就会触发下面的重连, 而重连本身也要抢同一把锁,
+            // 于是变成「争用 → 重连 → 清零 → 再争用」的自转, 反而更久拿不到数据。
+            // 只提示一下, 下一拍继续试即可 —— EC 互斥量本来就是"君子协定",
+            // 别人偶尔占一下是正常状态。
+            if (sample.Transient)
+            {
+                // 但看门狗照走: 交还自动本身也要抢同一把锁, 抢不到只是白跑一趟,
+                // 而少走这一步就等于把"读不到就交还"这条安全路径关掉了。
+                _setStatus("EC 正被其它监控软件占用, 稍后自动重试。", Theme.Warn);
+                _mode()?.CheckReadError();
+                return;
+            }
+
             _consecutiveErrors++;
 
-            // 读失败也必须过看门狗。原实现这里直接 return, 后面的温度看门狗
-            // 永远不会执行 —— 而"EC 读不到"正是既确认不了温度、也确认不了模式的时刻,
+            // 读失败也必须过看门狗。原实现这里直接 return, 后面的看门狗
+            // 永远不会执行 —— 而"EC 读不到"正是既确认不了转速、也确认不了模式的时候,
             // 是最需要兜底的那一种状态, 而不是可以跳过监控的状态。
             _mode()?.CheckReadError();
 
-            // 界面与覆盖层都清成"无数据"。原来这里只 return, 三张卡片和 RTSS 覆盖层
+            // 界面与覆盖层都清成"无数据"。原来这里只 return, 卡片和 RTSS 覆盖层
             // 会一直停在最后一次成功读到的值 —— 看起来一切正常, 实际上什么都没读到。
-            // 这种"静默陈旧"比显示空白危险: 用户会照着假温度判断散热是否正常。
+            // 这种"静默陈旧"比显示空白危险: 用户会照着假转速判断散热是否正常。
             _fan1Card.Value = "--";
             _fan2Card.Value = "--";
-            _tempCard.Value = "--";
 
             // 刻度条一起清空。留着上一次的比例比留数字更误导: 数字至少看得出是旧的,
             // 一条还在 60% 的条看起来就像"现在正转着"。
             _fan1Card.SetMeterRaw(-1);
             _fan2Card.SetMeterRaw(-1);
-            _tempCard.SetMeterRaw(-1);
             _publisher.PublishUnavailable();
 
             if (_consecutiveErrors >= 5)
@@ -275,8 +324,26 @@ internal sealed class FanPollingController
                 // 连续失败多半是句柄失效, 重连一次。
                 // 先记住原因: Open 成功会把状态改成"已连接", 失败会写它自己的错误,
                 // 两种情况都不该把"为什么重连"这条线索丢掉, 所以重连完再补写一次。
+                //
+                // 但重连也要受退避闸门约束: 原来这里是无条件 Open, 于是设备真的坏了
+                // 的时候, 每 5 拍就 new 一次 PawnIo + 重载 LpcIO.bin + 探测端口,
+                // 而 Open 成功又会把 _openBackoffSeconds 清零 —— 那两处互相抵消,
+                // 退避等于不存在, 退化成"每 5 秒重建设备"的稳定循环。
                 string why = "读取异常: " + sample.Error;
-                Open(interactive: false);
+                if (_nextOpenAttemptUtc <= DateTime.UtcNow)
+                {
+                    Open(interactive: false);
+
+                    // 重连没成也要像上面那条路径一样把退避推远, 否则下一次失败
+                    // 立刻又落进这个分支。
+                    if (_reader is null || !_reader.IsOpen)
+                    {
+                        _openBackoffSeconds = Math.Min(
+                            Math.Max(_openBackoffSeconds * 2, MinOpenBackoffSeconds), MaxOpenBackoffSeconds);
+                        _nextOpenAttemptUtc = DateTime.UtcNow.AddSeconds(_openBackoffSeconds);
+                    }
+                }
+
                 if (_reader is null || !_reader.IsOpen)
                     _setStatus(why, Theme.Err);
                 _consecutiveErrors = 0;
@@ -286,24 +353,32 @@ internal sealed class FanPollingController
 
         _consecutiveErrors = 0;
 
-        if (sample.Fans.Count >= 2)
-        {
-            ApplyFanCard(_fan1Card, sample.Fans[0]);
-            ApplyFanCard(_fan2Card, sample.Fans[1]);
-        }
+        // 按实际返回的条数逐张刷新, 不要写成 ">= 2 才刷新两张":
+        // 只回来一个风扇时, 另一张会保留上一帧的数字, 看起来像还在转。
+        ApplyFanCard(_fan1Card, sample.Fans, 0);
+        ApplyFanCard(_fan2Card, sample.Fans, 1);
 
-        _tempCard.Value = sample.Temperature?.ToString() ?? "--";
-        _tempCard.SetMeter(sample.Temperature, DataCard.TempScaleC);
-
-        // 回读校准 + 温度看门狗。顺序与拆分前一致 (先校准再判), 不要调换。
+        // 回读校准 + 看门狗。顺序与拆分前一致 (先校准再判), 不要调换。
         _mode()?.Observe(sample);
 
         _publisher.Publish(sample);
     }
 
-    /// <summary>把一次读数刷到卡片上, 同时按可信度决定小圆点颜色。</summary>
-    private static void ApplyFanCard(DataCard card, FanReading f)
+    /// <summary>
+    /// 把某一号风扇的读数刷到卡片上。这一号没回来时清成"--"并清空刻度条,
+    /// 而不是保留上一帧 —— 静默陈旧比空白危险。
+    /// </summary>
+    private static void ApplyFanCard(DataCard card, IReadOnlyList<FanReading> fans, int index)
     {
+        if (index >= fans.Count)
+        {
+            card.Value = "--";
+            card.DotColor = Theme.Text3;
+            card.SetMeterRaw(-1);
+            return;
+        }
+
+        FanReading f = fans[index];
         card.Value = FormatRpm(f);
 
         // 圆点语义: 有可信读数=绿; 停转=灰 (正常但值得注意); 不可信=橙。

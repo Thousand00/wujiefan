@@ -22,7 +22,7 @@
     构建配置，默认 Release。
 
 .PARAMETER MinTestCount
-    单测用例数下限，默认 257（254 之上补了 EcMutex 的「销毁后取用」与「半持有回滚」、迁移失败信号不被 Save 冲掉三条）。
+    单测用例数下限，默认 226（砍掉 CPU 温度与过热保护后删去 35 条、新增 4 条：不再读温度寄存器、关掉 PwmOut 时少读两个寄存器、默认仍读 PwmOut、争用失败标记 Transient）。
     只做下界断言，用例增多不会误报；真正的门禁是失败数 = 0。
 
 .PARAMETER SkipBuild
@@ -58,7 +58,7 @@
 [CmdletBinding()]
 param(
     [string]$Configuration = 'Release',
-    [int]$MinTestCount = 257,
+    [int]$MinTestCount = 226,
     [switch]$SkipBuild,
     [switch]$SkipTest,
     [switch]$SkipSmoke,
@@ -439,8 +439,11 @@ if (-not $SkipSmoke) {
 
                     # 这些 ID 就是 tools/add-wujie-layers.py 里 Provider=AIDA 源块的 ID，
                     # 图层名通过 %SourceName% 引用它们，故校验 ID 等价于校验图层契约。
-                    $fanNodes = @($doc.zephyr.fan)
-                    $tempNodes = @($doc.zephyr.temp)
+                    # 用 XPath 取, 不要写 @($doc.zephyr.fan): 节点不存在时
+                    # PowerShell 的属性访问返回 $null, 而 @() 会把它包成"1 个元素",
+                    # 于是"一个都没有"被数成"有 1 个", 两种断言的判据都是反的。
+                    $fanNodes = @($doc.SelectNodes('/zephyr/fan'))
+                    $tempNodes = @($doc.SelectNodes('/zephyr/temp'))
 
                     if ($fanNodes.Count -ne 2) {
                         Write-Bad "预期 2 个 <fan>，实际 $($fanNodes.Count)"
@@ -462,14 +465,14 @@ if (-not $SkipSmoke) {
                         }
                     }
 
-                    if ($tempNodes.Count -ne 1) {
-                        Write-Bad "预期 1 个 <temp>，实际 $($tempNodes.Count)"
-                        $failures += "<temp> 数量 $($tempNodes.Count) != 1"
-                    } elseif ($tempNodes[0].id -ne 'ZEPHYR_CPUT') {
-                        Write-Bad "温度源 ID 应为 ZEPHYR_CPUT，实际 $($tempNodes[0].id)"
-                        $failures += "温度源 ID 错误: $($tempNodes[0].id)"
+                    # CPU 温度这一版砍掉了：读它每轮要多跑 12 次驱动往返, 而它唯一的
+                    # 用途(过热保护)也一并废弃。这里反过来钉住"不再发 temp 节点"——
+                    # 以后有人顺手加回去, RTSS 那边会多出一个没人画的数据源。
+                    if ($tempNodes.Count -ne 0) {
+                        Write-Bad "不应再有 <temp> 节点，实际 $($tempNodes.Count) 个"
+                        $failures += "<temp> 数量 $($tempNodes.Count) != 0"
                     } else {
-                        Write-Ok "温度源 ZEPHYR_CPUT = $($tempNodes[0].value)"
+                        Write-Ok '不再发 <temp> 节点（CPU 温度功能已移除）'
                     }
                 }
             }

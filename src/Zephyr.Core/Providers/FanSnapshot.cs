@@ -4,7 +4,6 @@ namespace Zephyr.Core.Providers;
 public sealed class FanSnapshot
 {
     public IReadOnlyList<FanEntry> Fans { get; init; } = Array.Empty<FanEntry>();
-    public int? Temperature { get; init; }
 }
 
 public sealed class FanEntry

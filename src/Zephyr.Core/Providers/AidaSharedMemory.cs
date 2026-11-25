@@ -19,10 +19,11 @@ namespace Zephyr.Core.Providers;
 ///
 /// 传感器类型决定 RTSS 显示的单位:
 ///   fan  -> "Fan tachometer" / RPM
-///   temp -> "Temperature"    / °C
 ///   duty -> "Fan speed"      / %
 ///   volt -> "Voltage"        / V
 ///   pwr  -> "Power"          / W
+/// (temp -> "Temperature" / °C 是 RTSS 支持的另一种类型, 但本程序不读 CPU 温度,
+///  所以不会往共享内存里写 temp 节点。)
 ///
 /// 每个传感器三个子标签: id / label / value。
 ///   id    = RTSS 侧数据源 ID, 用户在 OverlayEditor 里选中的就是它
@@ -144,8 +145,7 @@ public sealed class AidaSharedMemory : IDisposable
     public static string BuildXml(FanSnapshot s)
     {
         // 完全没有任何数据时整帧不发: RTSS 那边就当作这一帧没有更新。
-        // 只要还有东西要发, 温度节点就按"保留节点 + value 留空"的规则处理 (见下)。
-        if (s.Fans.Count == 0 && s.Temperature is null) return "";
+        if (s.Fans.Count == 0) return "";
 
         var sb = new StringBuilder(512);
 
@@ -157,19 +157,6 @@ public sealed class AidaSharedMemory : IDisposable
             sb.Append("<value>").Append(Escape(f.ValueText)).Append("</value>");
             sb.Append("</fan>");
         }
-
-        // 温度未知时也要发这个节点, 只是 value 留空 —— 与无效风扇值的处理一致。
-        //
-        // 原来这里是「温度未知就整块省略」。那样 RTSS 的 overlay 会继续显示上一次
-        // 成功读到的温度, 看起来像当前温度其实早就不是了。而温度正是本程序唯一
-        // 的安全信号 (过热看门狗靠它), 显示一个过期的数字比显示空白危险得多。
-        sb.Append("<temp>");
-        sb.Append("<id>").Append(IdPrefix).Append("CPUT</id>");
-        sb.Append("<label>CPU Temperature</label>");
-        sb.Append("<value>");
-        if (s.Temperature is int t) sb.Append(t);
-        sb.Append("</value>");
-        sb.Append("</temp>");
 
         return sb.ToString();
     }

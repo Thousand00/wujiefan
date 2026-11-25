@@ -18,7 +18,7 @@ public class FanReaderSamplingTests
         .With(EcRegisters.ModeFlag2, EcRegisters.ModeAuto);
 
     [Fact]
-    public void Read_正常采样_两个风扇与温度都有值()
+    public void Read_正常采样_两个风扇都有值()
     {
         var fake = HealthyEc();
         fake.TachCount = 4000;
@@ -28,7 +28,6 @@ public class FanReaderSamplingTests
 
         Assert.Null(s.Error);
         Assert.True(s.HasData);
-        Assert.Equal(55, s.Temperature);
         Assert.Equal(2, s.Fans.Count);
         Assert.Equal("Fan1 (CPU)", s.Fans[0].Label);
         Assert.Equal("Fan2 (GPU)", s.Fans[1].Label);
@@ -36,31 +35,46 @@ public class FanReaderSamplingTests
         Assert.Equal(FanModeState.Auto, s.Mode);
     }
 
-    [Theory]
-    [InlineData(0)]      // 0 = 读不到, 归一化成 null
-    [InlineData(-3)]
-    [InlineData(101)]    // 100 以上不可能是 CPU 温度, 视为无效
-    [InlineData(255)]
-    public void Read_温度越界_归为null(int rawTemp)
+    [Fact]
+    public void Read_不再读CPU温度寄存器()
     {
-        var fake = HealthyEc().With(EcRegisters.CpuTemperature, rawTemp);
+        // 温度功能已砍: 每轮少一次 12 次驱动往返的读, 也少一次与 HWiNFO/LHM
+        // 争 EC 总线时序的机会。用"读它就抛"的传输层证明真的没读。
+        var fake = HealthyEc();
+        fake.ForbidReadOf(EcRegisters.CpuTemperature);
         using var reader = new FanReader(fake);
 
         FanSample s = reader.Read();
 
-        Assert.Null(s.Temperature);
-        Assert.True(s.HasData);   // 温度无效不影响风扇读数
+        Assert.Null(s.Error);
+        Assert.Equal(2, s.Fans.Count);
     }
 
-    [Theory]
-    [InlineData(1)]
-    [InlineData(100)]
-    public void Read_温度边界值_正常保留(int rawTemp)
+    [Fact]
+    public void Read_关掉PwmOut时少读两个寄存器且占空比为零()
     {
-        var fake = HealthyEc().With(EcRegisters.CpuTemperature, rawTemp);
+        // 生产路径用这个: 界面与 RTSS 都不显示占空比, 那两次读纯属白跑。
+        var fake = HealthyEc();
+        fake.ForbidReadOf(EcRegisters.PwmOut1);
+        fake.ForbidReadOf(EcRegisters.PwmOut2);
         using var reader = new FanReader(fake);
 
-        Assert.Equal(rawTemp, reader.Read().Temperature);
+        FanSample s = reader.Read(readPwmOut: false);
+
+        Assert.Null(s.Error);
+        Assert.Equal(2, s.Fans.Count);
+        // 0 表示"本程序不知道占空比", 不是"占空比是 0%"。
+        Assert.Equal(0.0, s.Fans[0].PwmPercent);
+        Assert.Equal(0.0, s.Fans[1].PwmPercent);
+    }
+
+    [Fact]
+    public void Read_默认仍然读PwmOut_测试与实验工具不受影响()
+    {
+        var fake = HealthyEc().With(EcRegisters.PwmOut1, 92);
+        using var reader = new FanReader(fake);
+
+        Assert.Equal(50.0, reader.Read().Fans[0].PwmPercent);
     }
 
     [Fact]

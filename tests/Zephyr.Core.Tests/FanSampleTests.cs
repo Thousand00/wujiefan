@@ -108,4 +108,24 @@ public class FanSampleTests
         Assert.True(new FanReading { RawCount = 4000, Note = "" }.IsValid);
         Assert.False(new FanReading { RawCount = 4000, Note = "读取不稳定(已丢弃本次计数)" }.IsValid);
     }
+
+    [Fact]
+    public void Transient_默认是false_只有明确标注才是瞬时失败()
+    {
+        // 默认必须保守: 没标注的一律当"设备可能坏了", 走连续失败计数与重连。
+        // 反过来(默认 true)会让真正的设备失效永远不触发重连。
+        Assert.False(new FanSample().Transient);
+        Assert.True(new FanSample { Error = "占着", Transient = true }.Transient);
+    }
+
+    [Fact]
+    public void Transient_失败的样本没有数据_但仍带错误说明()
+    {
+        // 上层靠 HasData 区分"有读数"与"这一拍什么都没有"; 靠 Error 给用户看原因。
+        // 瞬时失败两者都要满足, 否则会出现"提示了争用却还保留旧读数"的错觉。
+        var s = new FanSample { Error = "EC 正被其它监控软件占用, 本次采样跳过。", Transient = true };
+
+        Assert.False(s.HasData);
+        Assert.NotNull(s.Error);
+    }
 }

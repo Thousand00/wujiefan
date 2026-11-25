@@ -4,7 +4,7 @@ using Zephyr.Core.Native;
 namespace Zephyr.Core.Ec;
 
 /// <summary>
-/// 读取风扇转速与 CPU 温度, 并可切换"自动 / 强冷"两档模式。
+/// 读取两路风扇转速, 并可切换"自动 / 强冷"两档模式。
 ///
 /// 生命周期: 构造 -> Open() -> 循环 Read() -> Dispose()。
 /// 打开后一直复用同一个 PawnIO 句柄与端口, 不反复探测, 避免 I/O 抖动。
@@ -156,8 +156,14 @@ public sealed class FanReader : IDisposable
         }
     }
 
-    /// <summary>采一次样。读失败时返回带 Error 的对象, 不抛异常 (供界面持续刷新)。</summary>
-    public FanSample Read()
+    /// <summary>
+    /// 采一次数据。
+    ///
+    /// <paramref name="readPwmOut"/> 控制要不要回读两路 PWM 输出寄存器。生产路径
+    /// 关掉它: 那两个数只用于显示占空比, 而界面与 RTSS 都不显示占空比, 每轮却要为它
+    /// 多跑 24 次驱动往返 (占整轮 132 次的 18%)。测试与实验工具保持默认开启。
+    /// </summary>
+    public FanSample Read(bool readPwmOut = true)
     {
         if (_ec is null)
             return new FanSample { Timestamp = _clock.Now, Error = "设备未打开" };
@@ -168,27 +174,28 @@ public sealed class FanReader : IDisposable
             // 长期持锁会让 HWiNFO / LHM 这类同样守约定的软件彻底读不到 EC。
             //
             // 拿不到锁**不能**硬读: 一次采样由十几条端口写组成, 别人的 I2EC 时序
-            // 正插在中间时读出来的是错值 —— 温度尤其危险, 它会被送进过热看门狗。
-            // 如实报本轮失败, 让上层按"读失败"处理 (连续 N 次才收手)。
+            // 正插在中间时读出来的是错值。如实报本轮失败, 让上层按"读失败"处理
+            // (连续 N 次才收手)。
+            //
+            // 这条失败标记为 Transient: 锁被占是外部的临时状态, 下一拍通常就恢复了。
+            // 把它和"设备坏了"混在一起, 会让上层每 5 拍就重连一次设备 —— 而重连本身
+            // 也要抢同一把锁, 白花时间还会把退避计数清零。
             if (_mutex is not null && !_mutex.Acquire(MutexTimeoutMs))
             {
                 return new FanSample
                 {
                     Timestamp = _clock.Now,
                     Error = "EC 正被其它监控软件占用, 本次采样跳过。",
+                    Transient = true,
                 };
             }
 
-            int? temp;
             var fans = new List<FanReading>(2);
             FanModeState mode;
             try
             {
-                temp = _ec.Read(EcRegisters.CpuTemperature);
-                if (temp is < 1 or > 100) temp = null;
-
-                fans.Add(ReadFan(1, "Fan1 (CPU)", EcRegisters.Tach1, EcRegisters.PwmOut1));
-                fans.Add(ReadFan(2, "Fan2 (GPU)", EcRegisters.Tach2, EcRegisters.PwmOut2));
+                fans.Add(ReadFan(1, "Fan1 (CPU)", EcRegisters.Tach1, EcRegisters.PwmOut1, readPwmOut));
+                fans.Add(ReadFan(2, "Fan2 (GPU)", EcRegisters.Tach2, EcRegisters.PwmOut2, readPwmOut));
 
                 mode = ReadModeStateLocked();
             }
@@ -200,7 +207,6 @@ public sealed class FanReader : IDisposable
             return new FanSample
             {
                 Timestamp = _clock.Now,
-                Temperature = temp,
                 Fans = fans,
                 Mode = mode,
             };
@@ -486,7 +492,8 @@ public sealed class FanReader : IDisposable
         _ => "未知",
     };
 
-    private FanReading ReadFan(int index, string label, (ushort Lo, ushort Hi) tach, ushort pwmOutAddr)
+    private FanReading ReadFan(int index, string label, (ushort Lo, ushort Hi) tach,
+                               ushort pwmOutAddr, bool readPwmOut)
     {
         int count = _ec!.Read16Stable(tach.Lo, tach.Hi, out bool stable);
         var (rpm, note) = FanSample.ConvertRpm(count);
@@ -501,7 +508,9 @@ public sealed class FanReader : IDisposable
             RawCount = count,
             Rpm = rpm,
             Note = note,
-            PwmOut = _ec.Read(pwmOutAddr),
+            // 不读就写 0, 而不是留寄存器里的旧值: 0 是"本程序不知道占空比",
+            // 留着上一次的数会让人以为它是这一拍读到的。
+            PwmOut = readPwmOut ? _ec.Read(pwmOutAddr) : 0,
         };
     }
 

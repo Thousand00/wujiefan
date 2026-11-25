@@ -10,9 +10,8 @@ namespace Zephyr.Core.Tests;
 /// </summary>
 public class AidaXmlTests
 {
-    private static FanSnapshot TwoFans(int? temp = 55) => new()
+    private static FanSnapshot TwoFans() => new()
     {
-        Temperature = temp,
         Fans = new List<FanEntry>
         {
             new() { Id = "FAN1", Label = "Fan1 (CPU)", ValueText = "5615" },
@@ -27,8 +26,7 @@ public class AidaXmlTests
 
         Assert.Equal(
             "<fan><id>ZEPHYR_FAN1</id><label>Fan1 (CPU)</label><value>5615</value></fan>" +
-            "<fan><id>ZEPHYR_FAN2</id><label>Fan2 (GPU)</label><value>5342</value></fan>" +
-            "<temp><id>ZEPHYR_CPUT</id><label>CPU Temperature</label><value>55</value></temp>",
+            "<fan><id>ZEPHYR_FAN2</id><label>Fan2 (GPU)</label><value>5342</value></fan>",
             xml);
     }
 
@@ -37,53 +35,43 @@ public class AidaXmlTests
     {
         string xml = AidaSharedMemory.BuildXml(TwoFans());
 
-        // RTSS 的解析器直接按 <fan>/<temp> 顺序扫, 前面多一行 <?xml?> 会让它卡住。
+        // RTSS 的解析器直接按 <fan> 顺序扫, 前面多一行 <?xml?> 会让它卡住。
         Assert.DoesNotContain("<?xml", xml);
         Assert.DoesNotContain("<sensors>", xml);
         Assert.StartsWith("<fan>", xml);
     }
 
     [Fact]
-    public void BuildXml_一律带WUJIE前缀()
+    public void BuildXml_一律带ZEPHYR前缀()
     {
         Assert.Equal("ZEPHYR_", AidaSharedMemory.IdPrefix);
         string xml = AidaSharedMemory.BuildXml(TwoFans());
 
         // 前缀避免和 AIDA 自己或其它插件的 id 撞车。
-        // TwoFans() 带温度, 所以这里一共三处: 两个风扇 + 一个 CPU 温度节点。
         Assert.Equal(2, CountOccurrences(xml, "<fan>"));
         Assert.Equal(2, CountOccurrences(xml, "<fan><id>ZEPHYR_"));
-        Assert.Equal(1, CountOccurrences(xml, "<temp><id>ZEPHYR_"));
-        Assert.Equal(3, CountOccurrences(xml, "<id>ZEPHYR_"));
+        Assert.Equal(2, CountOccurrences(xml, "<id>ZEPHYR_"));
     }
 
     [Fact]
-    public void BuildXml_无温度时temp节点保留但value为空()
+    public void BuildXml_不再发温度节点()
     {
-        string xml = AidaSharedMemory.BuildXml(TwoFans(temp: null));
+        // CPU 温度这个功能已经砍掉: 读它每轮要多跑 12 次驱动往返, 而它的唯一
+        // 用途(过热保护)也一并废弃了。这里钉住"不写 temp 节点", 免得以后有人
+        // 顺手加回去 —— RTSS 那边一旦发现 ZEPHYR_CPUT 消失, 用户画好的图层会变空。
+        string xml = AidaSharedMemory.BuildXml(TwoFans());
 
-        // 节点保留、value 留空: 与无效风扇值同一处理。
-        // 整块省略会让 RTSS 继续显示上一次成功读到的温度 —— 温度是过热保护唯一的
-        // 安全信号, 显示过期数字比显示空白危险。
-        Assert.Contains("<temp><id>ZEPHYR_CPUT</id><label>CPU Temperature</label><value></value></temp>", xml);
-        Assert.Equal(2, CountOccurrences(xml, "<fan>"));
+        Assert.DoesNotContain("<temp>", xml);
+        Assert.DoesNotContain("ZEPHYR_CPUT", xml);
+        Assert.DoesNotContain("Temperature", xml);
     }
 
     [Fact]
     public void BuildXml_空快照返回空串()
     {
-        // 一个风扇都没有、温度也没有: 整帧不发, RTSS 那边当作这帧没更新。
+        // 一个风扇都没有: 整帧不发, RTSS 那边当作这帧没更新。
         string xml = AidaSharedMemory.BuildXml(new FanSnapshot());
         Assert.Equal("", xml);
-    }
-
-    [Fact]
-    public void BuildXml_只有温度没有风扇时也发布温度()
-    {
-        string xml = AidaSharedMemory.BuildXml(new FanSnapshot { Temperature = 61 });
-
-        Assert.Equal(0, CountOccurrences(xml, "<fan>"));
-        Assert.Contains("<value>61</value>", xml);
     }
 
     [Fact]

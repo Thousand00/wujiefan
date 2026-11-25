@@ -6,7 +6,7 @@ using Zephyr.Core.Config;
 namespace Zephyr.Ui;
 
 /// <summary>
-/// 设置弹窗。把「开机自动启动」「向 RTSS 提供数据」从主面板挪进来, 并加上过热保护的两个参数。
+/// 设置弹窗。把「开机自动启动」「向 RTSS 提供数据」从主面板挪进来, 另加一个全局快捷键小节。
 ///
 /// 挪走这两个开关不是因为它们不重要, 而是因为主窗口是一个"看一眼就走"的面板:
 /// 三列数据卡 + 状态栏已经把纵向空间占满, 每加一个开关就往下挤一格,
@@ -156,24 +156,10 @@ internal sealed class SettingsDialogForm : Form
 
     private readonly ToggleRow _autoStartRow = new();
     private readonly ToggleRow _rtssRow = new();
-    private readonly TextBox _tempBox = new();
-    private readonly TextBox _holdBox = new();
-
-    /// <summary>打开时的值。输入框被清空(或塞进非数字)时用它兜底, 而不是兜到边界。</summary>
-    private readonly int _initialTemp;
-    private readonly int _initialHold;
 
     private Rectangle _titleRect;
-    private Rectangle _sectionRect;
-    private Rectangle _tempCaptionRect;
-    private Rectangle _tempHintRect;
-    private Rectangle _holdCaptionRect;
-    private Rectangle _holdHintRect;
-    private Rectangle _noteRect;
     private Rectangle _saveRect;
     private Rectangle _cancelRect;
-    private Rectangle _tempPillRect;
-    private Rectangle _holdPillRect;
 
     private Rectangle _hotKeySectionRect;
     private Rectangle _hotKeyCaptionRect;
@@ -200,8 +186,6 @@ internal sealed class SettingsDialogForm : Form
     {
         _settings = settings;
         _autoStart = autoStart;
-        _initialTemp = settings.EmergencyTemperatureC;
-        _initialHold = settings.EmergencyHoldSamples;
 
         // 存的是规范写法, 直接拿来显示即可; 万一有人手改坏了, Load() 已经清成空串。
         _hotKey = settings.StrongCoolHotKey ?? "";
@@ -244,89 +228,19 @@ internal sealed class SettingsDialogForm : Form
         _rtssRow.Hint = "(AIDA64 通道)";
         _rtssRow.SetCheckedSilently(_settings.PublishToRtss);
 
-        StyleNumberBox(_tempBox, _initialTemp, maxLength: 3);
-        StyleNumberBox(_holdBox, _initialHold, maxLength: 2);
-
-        // 输入过程中只放数字进来, 但框里仍可能是 "" 或 5 这种越界值,
-        // 所以离开时归一化一次, 保存前再归一化一次。可见地"跳"一下,
-        // 比偷偷换成别的值诚实 —— 范围就写在这一行的括号里。
-        _tempBox.Leave += (_, _) => ClampBox(_tempBox,
-            AppSettings.EmergencyTemperatureMin, AppSettings.EmergencyTemperatureMax, _initialTemp);
-        _holdBox.Leave += (_, _) => ClampBox(_holdBox,
-            AppSettings.EmergencyHoldSamplesMin, AppSettings.EmergencyHoldSamplesMax, _initialHold);
-
-        _tempBox.KeyDown += (_, e) => Nudge(e, _tempBox,
-            AppSettings.EmergencyTemperatureMin, AppSettings.EmergencyTemperatureMax);
-        _holdBox.KeyDown += (_, e) => Nudge(e, _holdBox,
-            AppSettings.EmergencyHoldSamplesMin, AppSettings.EmergencyHoldSamplesMax);
-
-        // 录制中点到输入框时必须先结束录制。
-        //
-        // 窗体的 OnMouseDown 收不到子控件上的点击: 点 TextBox 时消息直接给了 TextBox,
-        // 于是 _recording 一直挂着, 而 KeyPreview + 录制优先会把每一个数字键都判成
-        // "缺修饰键"再 SuppressKeyPress —— 输入框完全打不进字, Alt+F4 也被吞掉,
-        // 用户只能按 Esc 脱身。Enter/鼠标进入都当作"我不想录了"。
-        _tempBox.Enter += (_, _) => CancelRecordingIfAny();
-        _holdBox.Enter += (_, _) => CancelRecordingIfAny();
+        // 录制中点到别的可交互控件时要先结束录制: 否则 _recording 一直挂着,
+        // 而 KeyPreview + 录制优先会把之后每一次按键都判成"缺修饰键"再吞掉,
+        // 开关也敲不动、Alt+F4 也失效, 用户只能按 Esc 脱身。
         _autoStartRow.Enter += (_, _) => CancelRecordingIfAny();
         _rtssRow.Enter += (_, _) => CancelRecordingIfAny();
 
-        Controls.AddRange(new Control[] { _autoStartRow, _rtssRow, _tempBox, _holdBox });
+        Controls.AddRange(new Control[] { _autoStartRow, _rtssRow });
     }
 
     /// <summary>正在录制就结束它, 并明确告诉用户原快捷键没变。</summary>
     private void CancelRecordingIfAny()
     {
         if (_recording) StopRecording("已取消录制, 原来的快捷键不变。");
-    }
-
-    /// <summary>
-    /// 数值输入用带深色样式的 TextBox 而不是 NumericUpDown: 后者的上下箭头由系统绘制,
-    /// 深色主题下会留下两个浅灰方块, 而 BorderStyle=None 也去不掉它们。
-    ///
-    /// Multiline 打开只是为了能用 Bounds 指定高度 (单行 TextBox 的高度由字体决定, 撑不起来),
-    /// 配合 WordWrap=false + 无滚动条, 行为上仍是单个数字输入。
-    /// </summary>
-    private static void StyleNumberBox(TextBox box, int value, int maxLength)
-    {
-        box.Text = value.ToString();
-        box.MaxLength = maxLength;
-        box.Multiline = true;
-        box.WordWrap = false;
-        box.ScrollBars = ScrollBars.None;
-        box.BorderStyle = BorderStyle.None;
-        box.BackColor = Theme.Panel2;
-        box.ForeColor = Theme.Text1;
-        box.Font = Theme.RowLabel;
-        box.TextAlign = HorizontalAlignment.Center;
-
-        box.KeyPress += (_, e) =>
-        {
-            if (char.IsControl(e.KeyChar)) return;
-            if (!char.IsDigit(e.KeyChar)) e.Handled = true;
-        };
-    }
-
-    private static void ClampBox(TextBox box, int min, int max, int fallback)
-    {
-        int v = int.TryParse(box.Text, out int parsed) ? parsed : fallback;
-        v = Math.Clamp(v, min, max);
-        box.Text = v.ToString();
-    }
-
-    /// <summary>上/下方向键微调。没有上下箭头, 键盘就是唯一能"拨"一格的方式。</summary>
-    private static void Nudge(KeyEventArgs e, TextBox box, int min, int max)
-    {
-        int step = e.KeyCode == Keys.Up ? 1 : e.KeyCode == Keys.Down ? -1 : 0;
-        if (step == 0) return;
-
-        e.Handled = true;
-        e.SuppressKeyPress = true;
-
-        int v = int.TryParse(box.Text, out int parsed) ? parsed : min;
-        v = Math.Clamp(v + step, min, max);
-        box.Text = v.ToString();
-        box.SelectionStart = box.Text.Length;
     }
 
     private void LayoutDialog()
@@ -353,7 +267,6 @@ internal sealed class SettingsDialogForm : Form
         y += rowH + Dpi.Px(this, 18);
 
         int boxH = Dpi.Px(this, DesignBoxHeight);
-        int boxW = Dpi.Px(this, 56);
         int captionW = Dpi.Px(this, 88);
         int lineH = Dpi.Px(this, 18);
 
@@ -376,28 +289,6 @@ internal sealed class SettingsDialogForm : Form
 
         _hotKeyNoteRect = new Rectangle(padX, y, inner, Dpi.Px(this, 18));
         y += Dpi.Px(this, 18) + Dpi.Px(this, 16);
-
-        _sectionRect = new Rectangle(padX, y, inner, Dpi.Px(this, 20));
-        y = _sectionRect.Bottom + Dpi.Px(this, 6);
-
-        _tempCaptionRect = new Rectangle(padX, y + (boxH - lineH) / 2, captionW, lineH);
-        _tempPillRect = new Rectangle(padX + captionW - Dpi.Px(this, 4), y, boxW, boxH);
-        _tempBox.Bounds = new Rectangle(_tempPillRect.X + Dpi.Px(this, 4), _tempPillRect.Y + Dpi.Px(this, 3),
-            _tempPillRect.Width - Dpi.Px(this, 8), _tempPillRect.Height - Dpi.Px(this, 6));
-        _tempHintRect = new Rectangle(_tempPillRect.Right + Dpi.Px(this, 10),
-            y + (boxH - lineH) / 2, inner - captionW - boxW - Dpi.Px(this, 10 - 4), lineH);
-        y += boxH + Dpi.Px(this, 4);
-
-        _holdCaptionRect = new Rectangle(padX, y + (boxH - lineH) / 2, captionW, lineH);
-        _holdPillRect = new Rectangle(padX + captionW - Dpi.Px(this, 4), y, boxW, boxH);
-        _holdBox.Bounds = new Rectangle(_holdPillRect.X + Dpi.Px(this, 4), _holdPillRect.Y + Dpi.Px(this, 3),
-            _holdPillRect.Width - Dpi.Px(this, 8), _holdPillRect.Height - Dpi.Px(this, 6));
-        _holdHintRect = new Rectangle(_holdPillRect.Right + Dpi.Px(this, 10),
-            y + (boxH - lineH) / 2, inner - captionW - boxW - Dpi.Px(this, 6), lineH);
-        y += boxH + Dpi.Px(this, 10);
-
-        _noteRect = new Rectangle(padX, y, inner, Dpi.Px(this, 32));
-        y += Dpi.Px(this, 32) + Dpi.Px(this, 14);
 
         int btnH = Dpi.Px(this, 34);
         int btnW = Dpi.Px(this, 88);
@@ -461,40 +352,11 @@ internal sealed class SettingsDialogForm : Form
             _recordHint.Length > 0 ? Theme.Warn : Theme.Text3,
             TextFormatFlags.Left | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
 
-        TextRenderer.DrawText(g, "过热保护", Theme.RowLabel, _sectionRect,
-            Theme.Text1, TextFormatFlags.Left | TextFormatFlags.NoPadding);
-
-        TextRenderer.DrawText(g, "温度阈值", Theme.RowLabel, _tempCaptionRect,
-            Theme.Text2, TextFormatFlags.Left | TextFormatFlags.NoPadding);
-
-        TextRenderer.DrawText(g, "连续采样", Theme.RowLabel, _holdCaptionRect,
-            Theme.Text2, TextFormatFlags.Left | TextFormatFlags.NoPadding);
-
-        // 范围写进括号, 与输入框同一行 —— 手输越界时值会跳到边界上, 用户据此能自己解释
-        TextRenderer.DrawText(g,
-            $"( {AppSettings.EmergencyTemperatureMin}–{AppSettings.EmergencyTemperatureMax}℃ )",
-            Theme.RowHint, _tempHintRect, Theme.Text3,
-            TextFormatFlags.Left | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
-
-        TextRenderer.DrawText(g,
-            $"( {AppSettings.EmergencyHoldSamplesMin}–{AppSettings.EmergencyHoldSamplesMax} 次 )",
-            Theme.RowHint, _holdHintRect, Theme.Text3,
-            TextFormatFlags.Left | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
-
-        // 单独一行说明, 不塞进上面两行的括注里 —— 那句话比"范围"长得多, 挤在同一行会被裁掉
-        TextRenderer.DrawText(g,
-            "CPU 温度达到该值、且连续 N 次采样都达到, 就把风扇交还 EC 自动控制。",
-            Theme.RowHint, _noteRect, Theme.Text3,
-            TextFormatFlags.Left | TextFormatFlags.NoPadding | TextFormatFlags.WordBreak);
-
-        DrawPill(g, _tempPillRect);
-        DrawPill(g, _holdPillRect);
-
         DrawButton(g, _saveRect, "保存", primary: true, _hoverSave);
         DrawButton(g, _cancelRect, "取消", primary: false, _hoverCancel);
     }
 
-    /// <summary>输入框底衬。TextBox 自己填的是直角矩形, 这里在它四周留 4px 画圆角, 角才看得见。</summary>
+    /// <summary>快捷键显示框的底衬 (圆角 + 描边), 让裸的矩形看起来和其他控件是一套的。</summary>
     private void DrawPill(Graphics g, Rectangle rect)
     {
         if (rect.IsEmpty) return;
@@ -745,15 +607,7 @@ internal sealed class SettingsDialogForm : Form
 
     private void Commit()
     {
-        // 保存前再归一化一次: 用户可能输了值就直接按 Enter, 没经过 Leave。
-        ClampBox(_tempBox, AppSettings.EmergencyTemperatureMin,
-            AppSettings.EmergencyTemperatureMax, _initialTemp);
-        ClampBox(_holdBox, AppSettings.EmergencyHoldSamplesMin,
-            AppSettings.EmergencyHoldSamplesMax, _initialHold);
-
         _settings.PublishToRtss = _rtssRow.Checked;
-        _settings.EmergencyTemperatureC = int.Parse(_tempBox.Text);
-        _settings.EmergencyHoldSamples = int.Parse(_holdBox.Text);
 
         // 录制到一半直接点保存: 保留原来那个, 不要把半成品写进去。
         _settings.StrongCoolHotKey = _hotKey;

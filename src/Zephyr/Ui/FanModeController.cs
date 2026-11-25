@@ -27,22 +27,13 @@ internal sealed class FanModeController
     /// <summary>正在执行模式切换 (含读回校验), 期间忽略重入。</summary>
     private bool _busy;
 
-    /// <summary>连续多少次采样温度达到看门狗阈值。只在强冷模式下累计。</summary>
-    private int _hotSamples;
-
-    /// <summary>已经因过热自动交还过 EC, 本轮不再重复弹提示。</summary>
-    private bool _emergencyRestored;
-
     /// <summary>
-    /// 上一次触发过热保护时真正生效的阈值, 只用于事后说明。
+    /// 已经因为"读不到 EC"交还过自动, 本轮不再重复触发。
     ///
-    /// 不能等到弹窗时再读设置 —— 那之间用户完全可能改过阈值, 于是提示里说
-    /// "连续 5 次达到 95C"而实际是按 92C 触发, 是编造而不是解释。
+    /// 早先它还承担"过热保护只报一次"的职责 —— 温度链路取消后, 只剩读失败这一种
+    /// 周期性触发, 语义反而更单纯了。
     /// </summary>
-    private int _triggerTempC;
-
-    /// <summary>同上, 触发时生效的连续次数。</summary>
-    private int _triggerHoldSamples;
+    private bool _emergencyRestored;
 
     /// <summary>
     /// 本会话是否仍持有"强冷"意图 —— 由用户操作或启动归一化确认, 与 EC 回读的实时模式无关。
@@ -65,19 +56,16 @@ internal sealed class FanModeController
     /// <summary>连续几次回读不是强冷才认定"被外部改掉", 见 <see cref="DivergedSamplesToGiveUp"/>。</summary>
     private int _divergedSamples;
 
+    /// <summary>本轮连续回读不是强冷的起点, 给次数阈值配一条时间下限。</summary>
+    private DateTime _firstDivergedAt;
+
     /// <summary>关机交还只做一次。0=未做, 1=已做; 用 <see cref="Interlocked.Exchange"/> 抢。</summary>
     private int _shutdownRestoreStarted;
-
-    /// <summary>强冷意图期间连续拿到无效温度的采样数, 与读失败共用阈值。</summary>
-    private int _tempUnknownSamples;
-
-    /// <summary>本轮连续无效温度的起点, 与读失败同样加一条最短持续时间。</summary>
-    private DateTime _firstTempUnknownAt;
 
     /// <summary>
     /// 强冷期间连续读失败几次就交还自动。取 3: 默认 1 秒轮询下约 3 秒。
     /// 单次失败是正常的 (与 HWiNFO / LHM 抢 EC 互斥量、一次 16 位读抖动),
-    /// 连续 3 次则说明 EC 通路已经坏了 —— 这时我们既确认不了温度也确认不了模式,
+    /// 连续 3 次则说明 EC 通路已经坏了 —— 这时我们确认不了模式,
     /// 继续把手动满转留在机器上是不负责任的。
     /// </summary>
     private const int ReadFailRestoreSamples = 3;
@@ -97,11 +85,16 @@ internal sealed class FanModeController
     /// 取 2 而不是 1: 我们自己的写序是 PWM1 → PWM2 → Flag1 → Flag2, 中间任何一刻被
     /// 采样线程插进来都会读到"一个强冷一个自动"的 Mixed。那是我们自己的中间态,
     /// 不是外部改掉 —— 一次就撤意图, 用户会看到强冷莫名其妙地被放弃。
+    ///
+    /// 两次之外还要压一条时间下限: 轮询间隔可配到 250ms, 光数次数会在 0.5 秒内
+    /// 就撤掉意图, 而 0.5 秒连一次完整的写序都未必跑完。理由与
+    /// <see cref="ReadFailMinDuration"/> 相同 —— 判据里凡是"连续 N 次"的东西,
+    /// 都必须配一条与轮询频率无关的时间地板。
     /// </summary>
-    private const int DivergedSamplesToGiveUp = 2;
+    private static readonly TimeSpan DivergedMinDuration = TimeSpan.FromSeconds(2);
 
-    /// <summary>另一条"确认不了"的路径: EC 读得到, 但温度寄存器给不出有效值。</summary>
-    private const string TempUnknownReason = "温度读数无效";
+    /// <summary>连续几次回读不是强冷才认定"被外部改掉", 上限见 <see cref="DivergedMinDuration"/>。</summary>
+    private const int DivergedSamplesToGiveUp = 2;
 
     public FanModeController(
         AppSettings settings,
@@ -119,24 +112,6 @@ internal sealed class FanModeController
 
     /// <summary>正在切换模式。轮询那边据此暂停"按回读校准界面", 免得把写入过程中的中间态画出来。</summary>
     public bool Busy => _busy;
-
-    /// <summary>
-    /// 过热阈值 (摄氏度), 每次判定时现读设置。
-    ///
-    /// 这里必须再夹一次: Core 的 Load() 已经归一化过, 但配置文件是明文、用户可以手改,
-    /// 设置弹窗也可能在本次会话中途改它。夹取而不是抛异常 —— 这是 UI 侧兜底,
-    /// 不是参数校验; 看门狗宁可用一个被修正过的阈值, 也不能因为参数荒唐就干脆不工作。
-    /// </summary>
-    private int EmergencyTempC =>
-        Math.Clamp(_settings.EmergencyTemperatureC,
-                   AppSettings.EmergencyTemperatureMin,
-                   AppSettings.EmergencyTemperatureMax);
-
-    /// <summary>过热保护需要的连续采样次数, 夹取理由同上。</summary>
-    private int EmergencyHoldSamples =>
-        Math.Clamp(_settings.EmergencyHoldSamples,
-                   AppSettings.EmergencyHoldSamplesMin,
-                   AppSettings.EmergencyHoldSamplesMax);
 
     /// <summary>勾选框的 CheckedChanged 出口。</summary>
     public void OnUserToggle()
@@ -207,7 +182,7 @@ internal sealed class FanModeController
         {
             // 设备打不开时不能授予意图: 看门狗拿它当"现在确实在手动满转"的授权,
             // 而此刻我们连 EC 都读不到, 更没写过任何寄存器。授权一个不存在的手动
-            // 满转, 只会在下一轮温度未知时触发一条莫名其妙的"已交还自动模式"。
+            // 满转, 只会在后续读失败时触发一条莫名其妙的"已交还自动模式"。
             _strongCoolIntent = false;
             UpdateUi(FanModeState.Unknown);
             return;
@@ -241,8 +216,7 @@ internal sealed class FanModeController
     }
 
     /// <summary>
-    /// 每次成功读到样本后调一次: 用回读校准界面, 再跑温度看门狗。
-    /// 顺序与拆分前一致 (校准 → 看门狗), 不要调换。
+    /// 每次成功读到样本后调一次: 用回读校准界面, 再检查模式漂移。
     /// </summary>
     public void Observe(FanSample sample)
     {
@@ -266,19 +240,24 @@ internal sealed class FanModeController
                 // 要连续两次才认。一次 Mixed 可能只是我们自己的两路标志写入之间被读了
                 // 一眼 (Fan1 已 0xDC / Fan2 还是 0x00), 那不是"外部改掉", 撤意图就等于
                 // 因为一次抖动把用户的强冷悄悄放弃掉 —— 与"静默丢数据"是同一类错误。
+                if (_divergedSamples == 0) _firstDivergedAt = DateTime.UtcNow;
                 _divergedSamples++;
 
-                if (!_modeDiverged && _divergedSamples >= DivergedSamplesToGiveUp)
+                // 除了次数还要压一条时间下限: 轮询间隔可配到 250ms, 光数次数会在
+                // 0.5 秒内就撤掉用户的强冷, 而那时候一次完整写序都未必跑完。
+                bool enough = _divergedSamples >= DivergedSamplesToGiveUp
+                           && DateTime.UtcNow - _firstDivergedAt >= DivergedMinDuration;
+
+                if (!_modeDiverged && enough)
                 {
                     _modeDiverged = true;
 
                     // 意图跟着撤: 看门狗的唯一授权来源就是它。留着一条已经和现实不符的
-                    // 意图, 等于让过热保护为"实际已经不存在的强冷"持续累计、并占用状态栏。
+                    // 意图, 等于让读失败保护为"实际已经不存在的强冷"持续累计、并占用状态栏。
                     _strongCoolIntent = false;
-                    _hotSamples = 0;
-                    _tempUnknownSamples = 0;
 
-                    UiLog($"强冷意图被撤销: EC 连续 {_divergedSamples} 次回读为 {sample.Mode}");
+                    UiLog($"强冷意图被撤销: EC 连续 {_divergedSamples} 次回读为 {sample.Mode}"
+                        + $" (持续 {(DateTime.UtcNow - _firstDivergedAt).TotalSeconds:F1}s)");
                     _setStatus(
                         "EC 里的强冷标志已被改回自动 (可能被其他软件重置), 界面已同步为真实状态。",
                         Theme.Warn);
@@ -297,83 +276,12 @@ internal sealed class FanModeController
                 }
             }
         }
-
-        CheckThermalWatchdog(sample);
-    }
-
-    /// <summary>
-    /// 温度看门狗。强冷是"只升不降", 所以它不会制造过热 ——
-    /// 这个看门狗防的是另一类意外: EC 不接受手动 PWM、或者别的软件把标志改回自动后
-    /// 我们仍在界面上显示"强冷中"。
-    ///
-    /// 触发条件必须连续多次达到阈值: 单次尖峰 (编译、游戏加载) 不该打断用户的强冷。
-    /// </summary>
-    private void CheckThermalWatchdog(FanSample sample)
-    {
-        // 没有强冷意图就没有需要兜底的手动满转, 直接复位计数。
-        if (!_strongCoolIntent)
-        {
-            _hotSamples = 0;
-            return;
-        }
-
-        // 已经交还过一次就不再反复触发, 否则每 3 秒弹一个框。
-        if (_emergencyRestored) return;
-
-        if (sample.Temperature is not int t)
-        {
-            // 采样成功但温度被过滤成 null (寄存器值落在 1..100 之外): 同样确认不了温度。
-            // 这里不能保留进度 —— "连续 N 次高温"必须是真的连续, 留着旧计数会让很久
-            // 之后的一次高温读数单独引爆保护, 那是误判而不是保护。
-            _hotSamples = 0;
-
-            // 但也不能就这么算了: 读失败走的是 CheckReadError, 而这条路径
-            // sample.Error 为 null, 永远到不了那里。持续读不到温度 = 无法确认是否过热,
-            // 与读失败等价, 用同一个阈值收手 (次数 + 最短持续时间, 理由见那边)。
-            if (_tempUnknownSamples == 0) _firstTempUnknownAt = DateTime.UtcNow;
-            _tempUnknownSamples++;
-
-            bool enough = _tempUnknownSamples >= ReadFailRestoreSamples
-                       && DateTime.UtcNow - _firstTempUnknownAt >= ReadFailMinDuration;
-
-            if (enough)
-            {
-                _tempUnknownSamples = 0;
-                UiLog($"看门狗: 连续 {ReadFailRestoreSamples} 次拿不到有效温度 (持续 {(DateTime.UtcNow - _firstTempUnknownAt).TotalSeconds:F1}s), 交还自动模式");
-                RestoreAuto(TempUnknownReason);
-            }
-            return;
-        }
-
-        _tempUnknownSamples = 0;
-
-        int limitC = EmergencyTempC;
-
-        if (t < limitC)
-        {
-            _hotSamples = 0;
-            return;
-        }
-
-        _hotSamples++;
-
-        int holdSamples = EmergencyHoldSamples;
-
-        if (_hotSamples >= holdSamples)
-        {
-            _hotSamples = 0;
-            // 记下本次真正生效的阈值, 弹窗要按它解释, 而不是按此刻的设置。
-            _triggerTempC = limitC;
-            _triggerHoldSamples = holdSamples;
-            UiLog($"过热保护触发: {t}C 连续 {holdSamples} 次 (阈值 {limitC}C), 交还自动模式");
-            RestoreAuto("过热保护");
-        }
     }
 
     /// <summary>
     /// 读失败时的看门狗: 连续 N 次读不到 EC 且持续足够久, 就主动交还自动。
     ///
-    /// EC 读不到意味着温度与模式都无法确认 —— 此时保留"手动满转"其实无害 (满转只会更吵),
+    /// EC 读不到意味着转速与模式都无法确认 —— 此时保留"手动满转"其实无害 (满转只会更吵),
     /// 但保留"我们以为还在强冷"的假象有害, 而且如果之前的写入只成功了一半 (两路标志不一致),
     /// 继续放着就可能停在一个没人验证过的状态上。所以宁可收手。
     ///
@@ -404,7 +312,7 @@ internal sealed class FanModeController
 
     /// <param name="userInitiated">
     /// 用户亲手点的 (要弹失败提示、失败要回滚勾选) 还是程序自己做的
-    /// (启动归一化、过热保护、退出恢复 —— 静默进行, 失败只写状态栏)。
+    /// (启动归一化、退出恢复 —— 静默进行, 失败只写状态栏)。
     /// </param>
     /// <returns>真实结果。调用方必须按它判定成败, <b>不能用意图反推</b>。</returns>
     public FanModeResult SetMode(FanMode mode, bool userInitiated, string? reason = null)
@@ -450,15 +358,13 @@ internal sealed class FanModeController
                 // 失败分支不建立, 否则看门狗会守着一个从未生效的模式。
                 _strongCoolIntent = mode == FanMode.StrongCool;
                 _readFailSamples = 0;
-                _tempUnknownSamples = 0;
                 _modeDiverged = false;
                 _divergedSamples = 0;
 
                 if (mode == FanMode.StrongCool)
                 {
-                    // 重新进入强冷, 让看门狗重新有机会工作。
+                    // 重新进入强冷, 让读失败看门狗重新有机会工作。
                     _emergencyRestored = false;
-                    _hotSamples = 0;
                     _setStatus("强冷已开启: 两个风扇满转 (约 5700 RPM), 温度会明显下降。", Theme.Ok);
                 }
                 else
@@ -470,9 +376,7 @@ internal sealed class FanModeController
             {
                 // 硬件没接受, 意图跟着撤销: 界面和看门狗都不能停在"已强冷"上。
                 _strongCoolIntent = false;
-                _hotSamples = 0;
                 _readFailSamples = 0;
-                _tempUnknownSamples = 0;
 
                 // 不确定状态: 切换失败且回滚也失败, 两个风扇可能各停在一个模式上,
                 // 我们也不知道寄存器里到底是什么。这比普通失败严重一个量级, 必须
@@ -559,7 +463,7 @@ internal sealed class FanModeController
     /// <summary>
     /// 立刻把风扇交还 EC 自动模式, 并同步设置里记的意愿。
     ///
-    /// 这是所有"收手"路径的唯一出口: 托盘菜单、过热保护、程序退出、关机、看门狗。
+    /// 这是所有"收手"路径的唯一出口: 托盘菜单、程序退出、关机、读失败看门狗。
     /// 集中在一处是为了保证每条路径都做同样的事 —— 尤其都要把 _settings.FanMode
     /// 也改回 Auto, 否则下次启动的归一化会把风扇又拉满。
     /// </summary>
@@ -569,7 +473,6 @@ internal sealed class FanModeController
         // 否则看门狗会拿一条已经放弃的意图继续累计, 反复触发交还。
         _strongCoolIntent = false;
         _readFailSamples = 0;
-        _tempUnknownSamples = 0;
         _modeDiverged = false;
         _divergedSamples = 0;
 
@@ -612,7 +515,7 @@ internal sealed class FanModeController
 
                 // 读失败触发时 EC 本来就通不了, 这时弹模态框只会把界面锁死在
                 // 每秒一次失败的循环里; 状态栏的红色错误已经足够醒目。
-                if (why != ReadFailReason && why != TempUnknownReason && why != "程序退出")
+                if (why != ReadFailReason && why != "程序退出")
                     DarkDialog.Show(_owner, "风扇状态不确定", r.Message, DarkDialog.Tone.Error);
                 return;
             }
@@ -625,17 +528,7 @@ internal sealed class FanModeController
 
         UiLog("RestoreAuto (" + why + ") ok");
 
-        if (why == "过热保护")
-        {
-            // 这种情况必须让用户知道: 他们以为强冷在跑, 实际已经被撤掉了。
-            _emergencyRestored = true;
-            _setStatus("温度过高, 已自动交还风扇控制给 EC (强冷模式已取消)。", Theme.Warn);
-            DarkDialog.Show(_owner, "过热保护",
-                $"CPU 温度连续 {_triggerHoldSamples} 次达到 {_triggerTempC}C, 已把风扇交还 EC 自动控制。" +
-                "\n\n这通常意味着强冷没有生效 (EC 没有接受手动 PWM)。建议检查散热环境, 或先关闭强冷。",
-                DarkDialog.Tone.Warning);
-        }
-        else if (why == "程序退出")
+        if (why == "程序退出")
         {
             // 用户正要退出, 不需要再告诉他什么。
         }
@@ -645,15 +538,7 @@ internal sealed class FanModeController
             // 用户连点确定都来不及。只走状态栏 + 日志, 让人知道保护动作发生过。
             _emergencyRestored = true;
             _setStatus(
-                $"连续 {ReadFailRestoreSamples} 次读不到 EC, 已把风扇交还自动控制 (无法确认温度时不再保持手动满转)。",
-                Theme.Warn);
-        }
-        else if (why == TempUnknownReason)
-        {
-            // 同属"周期性触发"的一类, 理由同上一分支: 只写状态栏, 不弹框。
-            _emergencyRestored = true;
-            _setStatus(
-                $"连续 {ReadFailRestoreSamples} 次拿不到有效温度, 已把风扇交还自动控制 (无法确认温度时不再保持手动满转)。",
+                $"连续 {ReadFailRestoreSamples} 次读不到 EC, 已把风扇交还自动控制 (无法确认风扇状态时不再保持手动满转)。",
                 Theme.Warn);
         }
         else

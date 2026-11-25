@@ -153,6 +153,39 @@ public class AppSettingsTests
     }
 
     [Fact]
+    public void 旧版配置里的过热保护字段_被当未知字段忽略()
+    {
+        // schema 1 -> 2 的原因是砍掉了过热保护: 那两个字段在 2 里已经没有对应属性。
+        // 旧文件里还留着它们, 反序列化必须只是忽略, 不能因此判定文件损坏 ——
+        // 否则每个从 0.6.x 升上来的用户第一次启动都会被"设置文件损坏"吓一跳。
+        RealSettingsFileFixture.WriteSettings(
+            "{ \"SchemaVersion\": 1, \"EmergencyTemperatureC\": 98, \"EmergencyHoldSamples\": 5, " +
+            "\"PollIntervalMs\": 1000, \"StrongCoolHotKey\": \"Ctrl+Shift+End\" }");
+
+        AppSettings s = AppSettings.Load();
+
+        Assert.False(AppSettings.LoadDegraded);      // 不是损坏, 只是旧字段
+        Assert.Null(AppSettings.LastError);
+        Assert.Equal("Ctrl+Shift+End", s.StrongCoolHotKey);
+        Assert.Equal(AppSettings.CurrentSchemaVersion, s.SchemaVersion);
+    }
+
+    [Fact]
+    public void 旧版程序读到新版配置_降级为不接管风扇()
+    {
+        // 反过来的方向: 0.6.x 的代码看到 SchemaVersion 2 会走"版本更高"分支。
+        // 这里用 SafeDefaults + 人为调高版本号来模拟"更新版本写出的文件",
+        // 断言的结果就是那时对用户的交代: 不接管风扇, 而不是按 1 的语义乱读。
+        RealSettingsFileFixture.WriteSettings(
+            "{ \"SchemaVersion\": 3, \"FanMode\": 1, \"PollIntervalMs\": 1000 }");
+
+        AppSettings s = AppSettings.Load();
+
+        Assert.Equal(FanMode.Auto, s.FanMode);
+        Assert.True(AppSettings.LoadDegraded);
+    }
+
+    [Fact]
     public void 旧版ForceUnsupported无时间戳_补有效期并警告()
     {
         RealSettingsFileFixture.WriteSettings("{ \"ForceUnsupported\": true, \"PollIntervalMs\": 1000 }");
@@ -214,7 +247,7 @@ public class AppSettingsTests
         Assert.True(s.Save(), AppSettings.LastError ?? "");
 
         string json = File.ReadAllText(RealSettingsFileFixture.SettingsPath);
-        Assert.Contains("\"SchemaVersion\": 1", json);
+        Assert.Contains($"\"SchemaVersion\": {AppSettings.CurrentSchemaVersion}", json);
         Assert.Contains("\"FanMode\": 1", json);
         Assert.Contains("\"PollIntervalMs\": 800", json);
         Assert.Null(AppSettings.LastError);

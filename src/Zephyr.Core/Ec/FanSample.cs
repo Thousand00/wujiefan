@@ -47,9 +47,19 @@ public sealed class FanReading
 public sealed class FanSample
 {
     public DateTime Timestamp { get; init; }
-    public int? Temperature { get; init; }
     public IReadOnlyList<FanReading> Fans { get; init; } = Array.Empty<FanReading>();
     public string? Error { get; init; }
+
+    /// <summary>
+    /// 本次失败是"别人临时占着 EC", 不是"设备坏了"。
+    ///
+    /// 这两件事在界面上都表现为读不到数据, 但对重连决策的意义完全相反:
+    /// 争用下一拍就会自己好, 重连只会白拆一次设备 (还要在 UI 线程上重新加载
+    /// 驱动、探测端口), 而重连成功又会把退避计数清零 —— 于是"争用 → 重连 →
+    /// 清零 → 再次争用"变成一个自转的循环。所以上层必须能分辨它们:
+    /// 瞬时失败照常显示"暂时读不到", 但**不**计入连续错误次数。
+    /// </summary>
+    public bool Transient { get; init; }
 
     /// <summary>采样时 EC 里实际的风扇模式。界面据此显示真实状态, 而不是程序以为的状态。</summary>
     public FanModeState Mode { get; init; } = FanModeState.Unknown;

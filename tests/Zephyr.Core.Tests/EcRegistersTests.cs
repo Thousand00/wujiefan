@@ -85,14 +85,6 @@ public class EcRegistersTests
     }
 
     [Fact]
-    public void 过热阈值与连续次数()
-    {
-        // 92C 是"再不管就要降频"的位置; 连续 3 次是为了滤掉瞬时尖峰。
-        Assert.Equal(92, EcRegisters.EmergencyTemperatureC);
-        Assert.Equal(3, EcRegisters.EmergencyHoldSamples);
-    }
-
-    [Fact]
     public void 机型档案只有一台且与文档一致()
     {
         Assert.Single(SupportedHardwareKnown());

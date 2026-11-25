@@ -140,8 +140,7 @@ internal static class Program
                 if (!json)
                 {
                     FanReading f1 = s.Fans[0], f2 = s.Fans[1];
-                    string t = s.Temperature?.ToString() ?? "--";
-                    Console.WriteLine($"{s.Timestamp:HH:mm:ss} {t,4}  {FormatRpm(f1),8} {f1.PwmPercent,4:F1}%  {FormatRpm(f2),8} {f2.PwmPercent,4:F1}%");
+                    Console.WriteLine($"{s.Timestamp:HH:mm:ss} {FormatRpm(f1),8} {f1.PwmPercent,4:F1}%  {FormatRpm(f2),8} {f2.PwmPercent,4:F1}%");
                 }
 
                 aidaSm?.Publish(ToSnapshot(s));
@@ -695,14 +694,14 @@ internal static class Program
 
             int rpm1Hot = hot.Fans.Count > 0 ? hot.Fans[0].Rpm : 0;
             int rpm2Hot = hot.Fans.Count > 1 ? hot.Fans[1].Rpm : 0;
-            Console.WriteLine($"  强冷采样: {hot.Temperature}C  Fan1 {rpm1Hot} RPM  Fan2 {rpm2Hot} RPM");
+            Console.WriteLine($"  强冷采样: Fan1 {rpm1Hot} RPM  Fan2 {rpm2Hot} RPM");
 
             // 满转需要一点时间, 再等 3 秒取一次。
             Thread.Sleep(3000);
             FanSample hot2 = reader.Read();
             int rpm1b = hot2.Fans.Count > 0 ? hot2.Fans[0].Rpm : 0;
             int rpm2b = hot2.Fans.Count > 1 ? hot2.Fans[1].Rpm : 0;
-            Console.WriteLine($"  3 秒后: {hot2.Temperature}C  Fan1 {rpm1b} RPM  Fan2 {rpm2b} RPM");
+            Console.WriteLine($"  3 秒后: Fan1 {rpm1b} RPM  Fan2 {rpm2b} RPM");
 
             // 184/184 理想值是 5650 左右; 留足余量, 只要明显高于怠速即可。
             Check("强冷转速确实拉高", rpm1b > 4500 && rpm2b > 4500,
@@ -719,7 +718,7 @@ internal static class Program
             FanSample idle2 = reader.Read();
             int rpm1c = idle2.Fans.Count > 0 ? idle2.Fans[0].Rpm : 0;
             int rpm2c = idle2.Fans.Count > 1 ? idle2.Fans[1].Rpm : 0;
-            Console.WriteLine($"  恢复 4 秒后: {idle2.Temperature}C  Fan1 {rpm1c} RPM  Fan2 {rpm2c} RPM");
+            Console.WriteLine($"  恢复 4 秒后: Fan1 {rpm1c} RPM  Fan2 {rpm2c} RPM");
 
             // 60C 上下时自动模式大约 3000-3600 RPM, 低于强冷的 5600。
             Check("自动模式转速已回落", rpm1c < 5200 && rpm2c < 5200,
@@ -875,7 +874,6 @@ internal static class Program
                 new FanEntry { Id = "FAN1", Label = "Fan1 (CPU)", ValueText = "1111" },
                 new FanEntry { Id = "FAN2", Label = "Fan2 (GPU)", ValueText = "2222" },
             },
-            Temperature = 33,
         };
         string xml = AidaSharedMemory.BuildXml(snap);
         Console.WriteLine(xml);
@@ -893,7 +891,6 @@ internal static class Program
             // 无有效读数时留空, 而不是写 0 —— 0 会被显示成"风扇停转"。
             ValueText = f.IsValid ? f.Rpm.ToString() : "",
         }).ToArray(),
-        Temperature = s.Temperature,
     };
 
     private static string FormatRpm(FanReading f) => f.Note.Length > 0 ? $"{f.Rpm}!" : f.Rpm.ToString();
@@ -917,9 +914,6 @@ internal static class Program
             Console.WriteLine($"  {samples[0].Fans[idx].Label}: 平均 {avg:F0} RPM, 范围 {min}..{max}, 抖动 {jitter:F1}%");
         }
 
-        var temps = samples.Where(s => s.Temperature.HasValue).Select(s => s.Temperature!.Value).ToList();
-        if (temps.Count > 0)
-            Console.WriteLine($"  温度: 平均 {temps.Average():F0}°C, 范围 {temps.Min()}..{temps.Max()}");
     }
 
     private static void PrintJson(List<FanSample> samples)
@@ -932,7 +926,6 @@ internal static class Program
             if (i > 0) sb.Append(',');
             sb.Append('{');
             sb.Append($"\"t\":\"{s.Timestamp:HH:mm:ss}\",");
-            sb.Append($"\"temp\":{(s.Temperature?.ToString() ?? "null")},");
             sb.Append("\"fans\":[");
             for (int j = 0; j < s.Fans.Count; j++)
             {

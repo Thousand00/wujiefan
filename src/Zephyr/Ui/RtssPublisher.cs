@@ -24,7 +24,7 @@ internal sealed class RtssPublisher : IDisposable
     ///
     /// 读失败时要发布一帧"值全空"的数据, 而那时手里没有 FanSample, 只能靠这份记忆
     /// 还原出 RTSS 认识的槽位。没有它就只能整帧不发, 覆盖层会一直停在最后一次成功
-    /// 读到的温度和转速 —— 那是安全感知上最不该出现的"静默陈旧"。
+    /// 读到的转速 —— 那是安全感知上最不该出现的"静默陈旧"。
     /// </summary>
     private IReadOnlyList<FanEntry>? _lastFanEntries;
 
@@ -105,7 +105,7 @@ internal sealed class RtssPublisher : IDisposable
     /// <summary>
     /// 读失败时调一次: 把"没有数据"这件事明确推给消费端。
     ///
-    /// 不发帧的话, 覆盖层会一直显示上一次读到的温度和转速 —— EC 掉线、休眠后句柄失效
+    /// 不发帧的话, 覆盖层会一直显示上一次读到的转速 —— EC 掉线、休眠后句柄失效
     /// 这些情况下, 用户看到的是一个稳定但已经完全失真的数字, 比显示空白危险得多。
     /// 这里发的是"槽位都在、值全空"的一帧: RTSS 那边显示成空/N/A, 而不是旧值。
     ///
@@ -128,7 +128,6 @@ internal sealed class RtssPublisher : IDisposable
                     Label = f.Label,
                     ValueText = "",
                 }).ToArray(),
-                Temperature = null,
             });
         }
         catch (Exception ex)
@@ -173,7 +172,6 @@ internal sealed class RtssPublisher : IDisposable
                 Label = f.Label,
                 ValueText = f.IsValid ? (f.IsStopped ? "0" : f.Rpm.ToString()) : "",
             }).ToArray(),
-            Temperature = s.Temperature,
         };
 
         // 只在有槽位时记住它。空集合交给下面那句判空挡住, 免得把"上次的槽位"

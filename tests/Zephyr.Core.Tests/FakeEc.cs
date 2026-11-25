@@ -45,6 +45,20 @@ internal sealed class FakeEc : IEcTransport
     public HashSet<ushort> FailReadsOn { get; } = new();
 
     /// <summary>
+    /// 这些地址"绝不该被读": 读一次就抛。与 <see cref="FailReadsOn"/> 的区别是
+    /// 意图 —— 前者模拟硬件出错, 这个用来钉住"这一版起不再读这个寄存器了"这种
+    /// 契约(砍掉 CPU 温度、生产路径关掉 PWM 回读)。读到了, 测试就红。
+    /// </summary>
+    public HashSet<ushort> ForbiddenReadsOn { get; } = new();
+
+    /// <summary>声明"这个地址不该被读"。返回自身, 便于链式调用。</summary>
+    public FakeEc ForbidReadOf(ushort address)
+    {
+        ForbiddenReadsOn.Add(address);
+        return this;
+    }
+
+    /// <summary>
     /// 为 true 时, <see cref="FailReadsOn"/> 只有在发生过至少一次写入之后才生效。
     /// 用来造"四个写入全部成功、只有回读那一下失败"的场景 ——
     /// 写入前的快照读取必须正常, 否则测到的是快照阶段就失败, 不是回读失败。
@@ -61,6 +75,8 @@ internal sealed class FakeEc : IEcTransport
     {
         Reads.Add(address);
         Ops.Add((true, address, 0));
+        if (ForbiddenReadsOn.Contains(address))
+            throw new EcException($"不该读 0x{address:X4}, 但被读了");
         if (FailReadsOn.Contains(address) && (!FailReadsOnlyAfterWrites || Writes.Count > 0))
             throw new EcException($"模拟回读失败 0x{address:X4}");
         return _regs.TryGetValue(address, out int v) ? v : 0;

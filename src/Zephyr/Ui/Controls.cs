@@ -8,7 +8,7 @@ namespace Zephyr.Ui;
 /// 数据卡: 深色圆角面板 + 左侧小圆点 + 标签 + 等宽大号数字 + 单位,
 /// 底部一条 3px 刻度条表示当前读数占量程的比例。
 ///
-/// 刻度条为什么放在这里而不是每轮由外面算: 卡片的量程 (RPM 5700 / 温度 100)
+/// 刻度条为什么放在这里而不是每轮由外面算: 卡片的量程 (RPM 5700)
 /// 属于显示逻辑, 调用方只管把数值喂进来。外面每次还要记得按量程除一遍,
 /// 多一处就能忘一处 —— 忘了的表现是"条不动", 很难看出来。
 /// </summary>
@@ -22,9 +22,6 @@ internal sealed class DataCard : Control
     /// 量程取到 6000 会让满转的条只到 93%, 看着像"还没转满"; 取 5700 才是满转≈满条。
     /// </summary>
     public const int FanScaleRpm = 5700;
-
-    /// <summary>温度刻度条的满量程 °C。与 EC 的量程 (1..100) 一致。</summary>
-    public const int TempScaleC = 100;
 
     private string _label = "";
     private string _value = "--";
@@ -52,7 +49,7 @@ internal sealed class DataCard : Control
     /// <summary>标签前的小圆点颜色。Color.Transparent 表示不画点。</summary>
     public Color DotColor { get => _dotColor; set { if (_dotColor == value) return; _dotColor = value; Invalidate(); } }
 
-    /// <summary>温度卡用小一号的数字 (设计稿 23px vs 27px)。</summary>
+    /// <summary>小一号的数字。温度卡取消后两张风扇卡都用大号, 留着这个开关是给以后的窄卡用。</summary>
     public bool BigValue { get => _big; set { _big = value; Invalidate(); } }
 
     /// <summary>
@@ -144,7 +141,7 @@ internal sealed class DataCard : Control
 
     /// <summary>
     /// 底部刻度条: 3px 高的轨道 + 按比例填充, 圆角 2。
-    /// 轨道铺满卡片内宽 (左右各留 padX), 让三张卡的条起点对齐 —— 起点不齐会显得歪。
+    /// 轨道铺满卡片内宽 (左右各留 padX), 让两张卡的条起点对齐 —— 起点不齐会显得歪。
     /// </summary>
     private void DrawMeter(Graphics g, int padX)
     {

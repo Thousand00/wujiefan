@@ -262,7 +262,7 @@ public class HotKeyComboTests
     {
         // 用户手改配置写成了小写，读回时统一成规范写法并记一次归一化提示。
         RealSettingsFileFixture.WriteSettings(
-            "{ \"SchemaVersion\": 1, \"StrongCoolHotKey\": \"ctrl+alt+f9\" }");
+            "{ \"SchemaVersion\": 2, \"StrongCoolHotKey\": \"ctrl+alt+f9\" }");
 
         AppSettings s = AppSettings.Load();
 
@@ -284,7 +284,7 @@ public class HotKeyComboTests
         // 留着一个注册不了的字符串，界面会显示"看起来设了、其实不生效"，
         // 而每次启动都会因为同样的原因注册失败 —— 用户永远查不出原因。
         RealSettingsFileFixture.WriteSettings(
-            $"{{ \"SchemaVersion\": 1, \"StrongCoolHotKey\": \"{broken}\" }}");
+            $"{{ \"SchemaVersion\": 2, \"StrongCoolHotKey\": \"{broken}\" }}");
 
         AppSettings s = AppSettings.Load();
 
@@ -337,7 +337,7 @@ public class HotKeyComboTests
                  })
         {
             RealSettingsFileFixture.WriteSettings(
-                "{ \"SchemaVersion\": 1, \"StrongCoolHotKey\": \"" + written + "\" }");
+                "{ \"SchemaVersion\": 2, \"StrongCoolHotKey\": \"" + written + "\" }");
 
             AppSettings s = AppSettings.Load();
 

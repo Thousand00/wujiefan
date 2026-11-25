@@ -32,12 +32,10 @@ public class AidaPublishTests
     private static FanSnapshot Empty() => new()
     {
         Fans = Array.Empty<FanEntry>(),
-        Temperature = null,
     };
 
     private static FanSnapshot Full() => new()
     {
-        Temperature = 55,
         Fans = new[]
         {
             new FanEntry { Id = "fan1", Label = "Fan1", ValueText = "3000" },
@@ -80,7 +78,6 @@ public class AidaPublishTests
         // 空帧只是跳过这一次写入，不能把对象弄成不可用状态。
         Assert.Contains("<fan>", aida.LastXml);
         Assert.Contains("3000", aida.LastXml);
-        Assert.Contains("<temp>", aida.LastXml);
     }
 
     [Fact]
@@ -105,12 +102,11 @@ public class AidaPublishTests
 
         mine.Publish(new FanSnapshot
         {
-            Temperature = 61,
-            Fans = Array.Empty<FanEntry>(),
+            Fans = new[] { new FanEntry { Id = "fan1", Label = "Fan1", ValueText = "4242" } },
         });
 
         // 这正是测试隔离要保证的：写自己的映射不会污染别人。
         Assert.Null(other.LastXml);
-        Assert.Contains("61", mine.LastXml);
+        Assert.Contains("4242", mine.LastXml);
     }
 }

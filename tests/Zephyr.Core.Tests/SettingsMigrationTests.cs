@@ -25,17 +25,13 @@ public class SettingsMigrationTests
             "  \"PollIntervalMs\": 1000,\n" +
             "  \"MinimizeToTray\": true,\n" +
             "  \"PublishToRtss\": false,\n" +
-            "  \"EmergencyTemperatureC\": 97,\n" +
-            "  \"EmergencyHoldSamples\": 4,\n" +
             "  \"StrongCoolHotKey\": \"Ctrl+Shift+End\"\n" +
             "}");
 
         AppSettings s = AppSettings.Load();
 
-        // 用户最在意的三样: 快捷键、过热阈值、RTSS 开关。
+        // 用户最在意的两样: 快捷键与 RTSS 开关。
         Assert.Equal("Ctrl+Shift+End", s.StrongCoolHotKey);
-        Assert.Equal(97, s.EmergencyTemperatureC);
-        Assert.Equal(4, s.EmergencyHoldSamples);
         Assert.False(s.PublishToRtss);
 
         // 迁移不是"出错", 不该按降级处理 —— 降级会让程序不接管风扇。
@@ -57,21 +53,18 @@ public class SettingsMigrationTests
         // 这时候覆盖等于把用户刚改的东西悄悄回滚, 是这套逻辑最危险的失败方式。
         RealSettingsFileFixture.WriteSettings(
             "{\n" +
-            "  \"EmergencyTemperatureC\": 99,\n" +
-            "  \"EmergencyHoldSamples\": 1,\n" +
+            "  \"PublishToRtss\": false,\n" +
             "  \"StrongCoolHotKey\": \"Ctrl+Alt+F10\"\n" +
             "}");
         RealSettingsFileFixture.WriteLegacySettings(
             "{\n" +
-            "  \"EmergencyTemperatureC\": 80,\n" +
-            "  \"EmergencyHoldSamples\": 9,\n" +
+            "  \"PublishToRtss\": true,\n" +
             "  \"StrongCoolHotKey\": \"Ctrl+Shift+End\"\n" +
             "}");
 
         AppSettings s = AppSettings.Load();
 
-        Assert.Equal(99, s.EmergencyTemperatureC);
-        Assert.Equal(1, s.EmergencyHoldSamples);
+        Assert.False(s.PublishToRtss);
         Assert.Equal("Ctrl+Alt+F10", s.StrongCoolHotKey);
         Assert.False(AppSettings.LoadMigrated);
     }
@@ -85,9 +78,9 @@ public class SettingsMigrationTests
         AppSettings s = AppSettings.Load();
 
         // 全新安装的判据: 拿到安全默认值, 且没有任何"迁移/降级"的痕迹。
-        Assert.Equal(EcRegisters.EmergencyTemperatureC, s.EmergencyTemperatureC);
-        Assert.Equal(EcRegisters.EmergencyHoldSamples, s.EmergencyHoldSamples);
         Assert.Equal("", s.StrongCoolHotKey);
+        Assert.True(s.PublishToRtss);
+        Assert.Equal(1000, s.PollIntervalMs);
         Assert.False(AppSettings.LoadMigrated);
         Assert.False(AppSettings.LoadDegraded);
     }
@@ -99,14 +92,14 @@ public class SettingsMigrationTests
         RealSettingsFileFixture.DeleteSettings();
         RealSettingsFileFixture.WriteLegacySettings(
             "{\n" +
-            "  \"EmergencyTemperatureC\": 200,\n" +
-            "  \"EmergencyHoldSamples\": 0\n" +
+            "  \"PollIntervalMs\": 5,\n" +
+            "  \"FanMode\": 99\n" +
             "}");
 
         AppSettings s = AppSettings.Load();
 
-        Assert.Equal(EcRegisters.EmergencyTemperatureC, s.EmergencyTemperatureC);
-        Assert.Equal(EcRegisters.EmergencyHoldSamples, s.EmergencyHoldSamples);
+        Assert.Equal(250, s.PollIntervalMs);   // 低于下限被夹到 250
+        Assert.Equal(FanMode.Auto, s.FanMode); // 未定义的枚举回默认值
 
         // 迁移成功 + 字段被归一化, 两件事各自都要有记录。
         Assert.True(AppSettings.LoadMigrated);
@@ -122,17 +115,17 @@ public class SettingsMigrationTests
         RealSettingsFileFixture.DeleteSettings();
         RealSettingsFileFixture.WriteLegacySettings(
             "{\n" +
-            "  \"EmergencyTemperatureC\": 96\n" +
+            "  \"StrongCoolHotKey\": \"Ctrl+Shift+End\"\n" +
             "}");
 
         AppSettings first = AppSettings.Load();
         Assert.True(AppSettings.LoadMigrated);
-        Assert.Equal(96, first.EmergencyTemperatureC);
+        Assert.Equal("Ctrl+Shift+End", first.StrongCoolHotKey);
 
         // 第二次启动: 新配置已经在, 旧目录也还在, 但不该再迁一次、也不该再提示。
         AppSettings second = AppSettings.Load();
         Assert.False(AppSettings.LoadMigrated);
-        Assert.Equal(96, second.EmergencyTemperatureC);
+        Assert.Equal("Ctrl+Shift+End", second.StrongCoolHotKey);
     }
 
     [Fact]
@@ -148,7 +141,7 @@ public class SettingsMigrationTests
         RealSettingsFileFixture.DeleteSettings();
         RealSettingsFileFixture.WriteLegacySettings(
             "{\n" +
-            "  \"EmergencyTemperatureC\": 96\n" +
+            "  \"StrongCoolHotKey\": \"Ctrl+Shift+End\"\n" +
             "}");
         Directory.CreateDirectory(RealSettingsFileFixture.SettingsPath);
 
@@ -163,8 +156,8 @@ public class SettingsMigrationTests
             // 注意这里**不是降级** —— 降级的含义是"文件在那儿但读不出来, 所以不敢接管风扇";
             // 而"压根没有配置"本来就是全新安装的正常状态, 安全默认(自动模式)本身已经是安全态。
             // 用户可见性由 LoadMigrateError 单独承担。
-            Assert.Equal(EcRegisters.EmergencyTemperatureC, s.EmergencyTemperatureC);
-            Assert.Equal(EcRegisters.EmergencyHoldSamples, s.EmergencyHoldSamples);
+            Assert.Equal("", s.StrongCoolHotKey);
+            Assert.True(s.PublishToRtss);
             Assert.False(AppSettings.LoadDegraded);
         }
         finally
@@ -187,7 +180,7 @@ public class SettingsMigrationTests
         RealSettingsFileFixture.DeleteSettings();
         RealSettingsFileFixture.WriteLegacySettings(
             "{\n" +
-            "  \"EmergencyTemperatureC\": 96\n" +
+            "  \"StrongCoolHotKey\": \"Ctrl+Shift+End\"\n" +
             "}");
         Directory.CreateDirectory(RealSettingsFileFixture.SettingsPath);
 
@@ -226,7 +219,7 @@ public class SettingsMigrationTests
         RealSettingsFileFixture.DeleteSettings();
         RealSettingsFileFixture.WriteLegacySettings(
             "{\n" +
-            "  \"EmergencyTemperatureC\": 95\n" +
+            "  \"StrongCoolHotKey\": \"Ctrl+Shift+End\"\n" +
             "}");
 
         AppSettings.Load();

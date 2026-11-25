@@ -10,10 +10,10 @@ using Zephyr.Core.Hardware;
 namespace Zephyr.Ui;
 
 /// <summary>
-/// 主窗口: 显示两个风扇转速与 CPU 温度, 提供强冷开关与设置入口。
+/// 主窗口: 显示两个风扇转速, 提供强冷开关与设置入口。
 ///
 /// 界面按 UI/Zephyr-UI-设计稿.html 实现 (2026-11-15): 深色圆角卡片、
-/// 自绘标题栏、三列数据卡、整行可点的开关、语义色状态栏。
+/// 自绘标题栏、两列数据卡、整行可点的开关、语义色状态栏。
 /// 所有布局坐标都是设计稿的 96dpi CSS px, 经 Dpi.Px 换算到实际设备像素。
 ///
 /// 这里只留窗口骨架: 布局与绘制、控件接线、状态栏、开机自启动、电源/会话事件、
@@ -31,7 +31,6 @@ public sealed class MainForm : Form
 
     private readonly DataCard _fan1Card = new();
     private readonly DataCard _fan2Card = new();
-    private readonly DataCard _tempCard = new();
     private readonly StatusBar _statusBar = new();
     private readonly ToggleRow _strongCoolRow = new();
     private readonly ActionRow _settingsRow = new();
@@ -81,7 +80,7 @@ public sealed class MainForm : Form
         FanPollingController? polling = null;
         _mode = new FanModeController(_settings, () => polling?.Reader, _strongCoolRow, this, SetStatus);
         polling = new FanPollingController(
-            this, _settings, _fan1Card, _fan2Card, _tempCard,
+            this, _settings, _fan1Card, _fan2Card,
             _publisher, () => _mode, SetStatus);
         _polling = polling;
 
@@ -128,31 +127,25 @@ public sealed class MainForm : Form
         _fan2Card.Value = "--";
         _fan2Card.DotColor = Theme.Text3;
 
-        _tempCard.Label = "CPU";
-        _tempCard.Unit = "°C";
-        _tempCard.Value = "--";
-        _tempCard.BigValue = false;
-        _tempCard.MeterColor = Theme.Hot;
-
         _strongCoolRow.Text = "强冷模式";
         _strongCoolRow.Hint = "(两个风扇满转)";
         _strongCoolRow.CheckedChanged += (_, _) => _mode.OnUserToggle();
 
         _settingsRow.Text = "设置";
-        _settingsRow.Hint = "(自启动 / RTSS / 过热保护 / 快捷键)";
+        _settingsRow.Hint = "(自启动 / RTSS / 快捷键)";
         _settingsRow.Click += (_, _) => OpenSettings();
 
         _footnoteLabel.AutoSize = false;
         _footnoteLabel.BackColor = Theme.WinBg;
         _footnoteLabel.ForeColor = Theme.Text3;
         _footnoteLabel.Font = Theme.Footnote;
-        _footnoteLabel.Text = "自启动 / RTSS 供数 / 过热保护 / 全局快捷键都在「设置」里; 点 × 不收进程, 只收进托盘继续读数与供数。";
+        _footnoteLabel.Text = "自启动 / RTSS 供数 / 全局快捷键都在「设置」里; 点 × 不收进程, 只收进托盘继续读数与供数。";
 
         _statusBar.SetStatus("正在初始化...", Theme.Text2, Color.Transparent);
 
         Controls.AddRange(new Control[]
         {
-            _machineLabel, _fan1Card, _fan2Card, _tempCard,
+            _machineLabel, _fan1Card, _fan2Card,
             _strongCoolRow, _settingsRow, _statusBar, _footnoteLabel,
         });
 
@@ -175,17 +168,16 @@ public sealed class MainForm : Form
         _machineLabel.Bounds = new Rectangle(padX, y, innerW, machineH);
         y += machineH + Dpi.Px(this, 6);
 
-        // 三列: 1fr 1fr .9fr, 间隙 10
+        // 两列等分, 中间一道 10px 间隙。c2 吃掉除不尽的 1px,
+        // 否则右卡边缘会比内宽少一个像素, 与下面的行对不齐。
         int gap = Dpi.Px(this, 10);
-        int usable = innerW - gap * 2;
-        int c1 = (int)Math.Round(usable / 2.9);
-        int c2 = c1;
-        int c3 = usable - c1 - c2;
+        int usable = innerW - gap;
+        int c1 = usable / 2;
+        int c2 = usable - c1;
         int cardH = Dpi.Px(this, DesignCardHeight);
 
         _fan1Card.Bounds = new Rectangle(padX, y, c1, cardH);
         _fan2Card.Bounds = new Rectangle(padX + c1 + gap, y, c2, cardH);
-        _tempCard.Bounds = new Rectangle(padX + c1 + c2 + gap * 2, y, c3, cardH);
         y += cardH + Dpi.Px(this, 10);
 
         int rowH = Dpi.Px(this, DesignRowHeight);
@@ -452,7 +444,7 @@ public sealed class MainForm : Form
         {
             // 改名后第一次启动。用户最直接的担心是"我的快捷键和阈值还在吗",
             // 所以这里必须说清楚是沿用了旧版本的设置, 而不是悄悄换了一份默认值。
-            SetStatus("已从旧版本沿用设置 (快捷键、过热保护、RTSS 开关都在)。", Theme.Text2);
+            SetStatus("已从旧版本沿用设置 (快捷键、RTSS 开关都在)。", Theme.Text2);
             UiLog("AppSettings migrated from " + RuntimeIdentity.LegacyDataDirectoryName);
         }
         else if (AppSettings.LoadMigrateError is { } migrateError)
@@ -596,8 +588,6 @@ public sealed class MainForm : Form
         // 之后任何一次 Save (改风扇模式、托盘操作、退出) 都会把它悄悄落盘 ——
         // 用户看到的却是"本次修改不会生效"。所以先记下用户能改的那几项, 失败时还原。
         bool pubBefore = _settings.PublishToRtss;
-        int tempBefore = _settings.EmergencyTemperatureC;
-        int holdBefore = _settings.EmergencyHoldSamples;
         string hotKeyBefore = _settings.StrongCoolHotKey;
 
         if (!SettingsDialog.Show(this, _settings, state))
@@ -612,8 +602,6 @@ public sealed class MainForm : Form
         if (!_settings.Save())
         {
             _settings.PublishToRtss = pubBefore;
-            _settings.EmergencyTemperatureC = tempBefore;
-            _settings.EmergencyHoldSamples = holdBefore;
             _settings.StrongCoolHotKey = hotKeyBefore;
 
             SetStatus("设置保存失败, 本次修改不会生效", Theme.Err);

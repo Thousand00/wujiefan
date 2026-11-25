@@ -29,7 +29,7 @@ internal static class Theme
     public static readonly Color Err = Rgb(0xD6, 0x5F, 0x5B);
 
     /// <summary>
-    /// 强冷暖橙。只用于温度刻度条与录制态强调, 不参与语义表达 ——
+    /// 强冷暖橙。温度刻度条取消后暂无使用者, 主题里留着备用; 不参与语义表达 ——
     /// 强冷=成功仍然是 Ok 绿, 别拿它当"强冷色"。
     /// </summary>
     public static readonly Color Hot = Rgb(0xF0, 0x8A, 0x4B);

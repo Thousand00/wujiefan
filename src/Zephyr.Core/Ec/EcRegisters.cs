@@ -68,16 +68,4 @@ public static class EcRegisters
 
     /// <summary>模式标志的取值: 自定义温度。本程序不写, 仅用于识别。</summary>
     public const byte ModeCustomTemp = 0xCC;
-
-    /// <summary>
-    /// 温度看门狗的**默认**阈值。达到这个温度且连续若干次, 强冷模式立即交还 EC。
-    ///
-    /// 这里只是默认值 —— 实际生效的阈值来自 <c>AppSettings.EmergencyTemperatureC</c>,
-    /// 用户可以在设置界面里改。之所以还留一组常量, 是因为 Core 层的测试与文档需要
-    /// 一个"出厂值"的锚点, 且默认值本身属于机型经验, 不该散落在 UI 里。
-    /// </summary>
-    public const int EmergencyTemperatureC = 92;
-
-    /// <summary>过热保护默认需要的连续采样次数。单次尖峰 (例如编译瞬间) 不该触发。</summary>
-    public const int EmergencyHoldSamples = 3;
 }
